@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use nom::{
     bytes::streaming::{tag, take_until},
+    error,
     sequence::{terminated, tuple},
     IResult, Parser,
 };
@@ -13,6 +16,8 @@ pub struct RequestLine {
     pub path: String,
     pub protocol: String,
 }
+
+pub type Headers = HashMap<String, String>;
 
 pub type RequestHeader = (String, String);
 
@@ -55,40 +60,41 @@ pub fn parser_request_header(input: &[u8]) -> IResult<&[u8], RequestHeader> {
     ))
 }
 
-// pub fn parser_request_head_part(input: &[u8]) -> IResult<&[u8]> {}
 
 /// 解析请求首部，一次性解析完全头部
-pub fn parser_request_head_all(input: &[u8]) -> IResult<&[u8], (RequestLine, Vec<RequestHeader>)> {
+pub fn parser_request_head_all(input: &[u8]) -> IResult<&[u8], (RequestLine, Headers)> {
     let (input, (request_line, row_headers, _end_lines)) =
         tuple((parser_request_line, take_until("\r\n\r\n"), tag("\r\n\r\n"))).parse(input)?;
 
-    let mut vec: Vec<RequestHeader> = Vec::new();
+    // 解析请求头
+    let mut headers = HashMap::<String, String>::new();
     let mut row_headers = row_headers.to_owned();
     row_headers.extend_from_slice(b"\r\n");
     loop {
+        // 请求头解析完毕
+        if row_headers.is_empty() {
+            break;
+        }
         match parser_request_header(&row_headers) {
             Ok((rest, request_header)) => {
-                vec.push(request_header);
+                headers.insert(request_header.0, request_header.1);
+
                 row_headers = rest.to_owned();
             }
-            Err(e) => {
-                println!("❌{:?}", e.is_incomplete());
-                // if e.code == error::ErrorKind::Eof {
-                //     break;
-                // }
+            Err(_) => {
                 break;
             }
         }
     }
 
-    Ok((input, (request_line, vec)))
+    Ok((input, (request_line, headers)))
 }
 
 #[cfg(test)]
 mod test {
     use nom::{
         bytes::streaming::{tag, take_until},
-        error::{self},
+        error,
         sequence::{terminated, tuple},
         IResult, Parser,
     };
@@ -170,17 +176,17 @@ mod test {
     }
 
     #[test]
+    /// 测试解析请求头
     fn parse_head() {
         let row = b"Get /index.html?a=1 Http/1.1\r\nHost: www.baidu.com\r\nContent-Type: text/html;charset=utf-8\r\nContent-Length: 100\r\n\r\n";
 
         let (input, (request_line, headers)) = parser_request_head_all(row).unwrap();
 
         assert!(input.is_empty(), "剩余内容：{input:?}");
-        println!("{:?}", request_line);
-        println!("{:?}", headers);
     }
 
     #[test]
+    /// 测试解析请求头，不完整
     fn parse_head_no_complete() {
         let row = b"Get /index.html?a=1 Http/1.1\r\nHost: www.baidu.com\r\nContent-Type: text/html;charset=utf-8\r\nContent-Length: ";
 
