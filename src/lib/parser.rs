@@ -1,8 +1,6 @@
 use nom::{
     bytes::streaming::{tag, take_until},
-    character::complete::line_ending,
-    multi::{many0, separated_list0},
-    sequence::{separated_pair, terminated, tuple},
+    sequence::{terminated, tuple},
     IResult, Parser,
 };
 
@@ -20,7 +18,7 @@ pub type RequestHeader = (String, String);
 
 /// 解析请求首部的请求行
 pub fn parser_request_line(input: &[u8]) -> IResult<&[u8], RequestLine> {
-    let (input, (method, sp, path, sp2, protocol)) = tuple((
+    let (input, (method, _sp, path, _sp2, protocol)) = tuple((
         take_until(" "),
         tag(" "),
         take_until(" "),
@@ -41,7 +39,7 @@ pub fn parser_request_line(input: &[u8]) -> IResult<&[u8], RequestLine> {
 
 /// 解析请求首部的请求头
 pub fn parser_request_header(input: &[u8]) -> IResult<&[u8], RequestHeader> {
-    let (input, (key, a, value)) = tuple((
+    let (input, (key, _colon, value)) = tuple((
         take_until(":"),
         tag(": "),
         terminated(take_until("\r\n"), tag("\r\n")),
@@ -57,13 +55,11 @@ pub fn parser_request_header(input: &[u8]) -> IResult<&[u8], RequestHeader> {
     ))
 }
 
-// fn p(input: &[u8]) -> IResult<&[u8], Vec<RequestHeader>> {
-// tuple((take_until(":"),tag(": "),))
-// }
+// pub fn parser_request_head_part(input: &[u8]) -> IResult<&[u8]> {}
 
-/// 解析请求首部
-pub fn parser_request_head(input: &[u8]) -> IResult<&[u8], (RequestLine, Vec<RequestHeader>)> {
-    let (input, (request_line, row_headers, end_lines)) =
+/// 解析请求首部，一次性解析完全头部
+pub fn parser_request_head_all(input: &[u8]) -> IResult<&[u8], (RequestLine, Vec<RequestHeader>)> {
+    let (input, (request_line, row_headers, _end_lines)) =
         tuple((parser_request_line, take_until("\r\n\r\n"), tag("\r\n\r\n"))).parse(input)?;
 
     let mut vec: Vec<RequestHeader> = Vec::new();
@@ -75,20 +71,24 @@ pub fn parser_request_head(input: &[u8]) -> IResult<&[u8], (RequestLine, Vec<Req
                 vec.push(request_header);
                 row_headers = rest.to_owned();
             }
-            Err(_) => break, // 如果解析错误，跳出循环
+            Err(e) => {
+                println!("❌{:?}", e.is_incomplete());
+                // if e.code == error::ErrorKind::Eof {
+                //     break;
+                // }
+                break;
+            }
         }
     }
 
-    return Ok((input, (request_line, vec)));
+    Ok((input, (request_line, vec)))
 }
 
 #[cfg(test)]
 mod test {
-    use bytes::BufMut;
     use nom::{
         bytes::streaming::{tag, take_until},
-        error::{self, Error},
-        multi::separated_list1,
+        error::{self},
         sequence::{terminated, tuple},
         IResult, Parser,
     };
@@ -100,7 +100,7 @@ mod test {
         let row = "Get /index.html Http/1.1\r\n";
 
         fn parser(input: &str) -> IResult<&str, RequestLine> {
-            let (input, (method, sp, path, sp2, protocol)) = tuple((
+            let (input, (method, _sp, path, _sp2, protocol)) = tuple((
                 take_until::<&str, &str, error::Error<&str>>(" "),
                 tag(" "),
                 take_until(" "),
@@ -110,16 +110,16 @@ mod test {
             .parse(input)
             .unwrap();
 
-            return Ok((
+            Ok((
                 input,
                 RequestLine {
                     method: method.to_string(),
                     path: path.to_string(),
                     protocol: protocol.to_string(),
                 },
-            ));
+            ))
         }
-        let a = parser(&row).unwrap();
+        let a = parser(row).unwrap();
         println!("{:?}", a.1);
     }
 
@@ -173,13 +173,22 @@ mod test {
     fn parse_head() {
         let row = b"Get /index.html?a=1 Http/1.1\r\nHost: www.baidu.com\r\nContent-Type: text/html;charset=utf-8\r\nContent-Length: 100\r\n\r\n";
 
-        let (input, (request_line, headers)) = parser_request_head(row).unwrap();
+        let (input, (request_line, headers)) = parser_request_head_all(row).unwrap();
 
         assert!(input.is_empty(), "剩余内容：{input:?}");
         println!("{:?}", request_line);
         println!("{:?}", headers);
     }
 
+    #[test]
+    fn parse_head_no_complete() {
+        let row = b"Get /index.html?a=1 Http/1.1\r\nHost: www.baidu.com\r\nContent-Type: text/html;charset=utf-8\r\nContent-Length: ";
 
+        let res = parser_request_head_all(row);
 
+        eprintln!("✅{res:?}");
+        assert!(res.is_err());
+        // println!("{:?}", request_line);
+        // println!("{:?}", headers);
+    }
 }
