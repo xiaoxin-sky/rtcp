@@ -141,16 +141,15 @@ impl HttpTransformer {
                         buf.advance(head_len);
                     }
 
-
                     let request_head = self.request_head.as_ref().unwrap();
                     if let Some(content_len) = request_head.get_content_length() {
-                        if content_len == "0" {
-                            break;
+                        // 如果当前读取的数据没有超过内容长度，继续读取
+                        if buf.len() < content_len.parse::<usize>().unwrap() {
+                            continue;
                         }
-                        if content_len.parse::<usize>().unwrap() == buf.len() {
-                            break;
-                        }
+                        break;
                     };
+                    break;
                 }
                 Err(e) => {
                     eprintln!("{e:?}");
@@ -158,18 +157,21 @@ impl HttpTransformer {
                 }
             };
         }
+        println!("读取结束");
         let end = std::time::Instant::now();
 
         println!("读取耗时:{:?}", end.duration_since(start));
 
-        let start = std::time::Instant::now();        
         let _ = self
             .tcp
-            .write_all(b"HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\n\r\nhello world!")
+            .write(b"HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: text/html;charset=utf-8\r\n\r\n")
+            .await;
+
+        let _ = self
+            .tcp
+            .write(format!("{}MiByte", ((buf.len() as f64) / 1024.0 / 1024.0)).as_bytes())
             .await;
         let _ = self.tcp.flush().await;
-        let end = std::time::Instant::now();
-        println!("写入耗时:{:?}", end.duration_since(start));
 
         Ok(())
     }
