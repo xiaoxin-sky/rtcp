@@ -6,6 +6,7 @@ use std::{
 
 use bytes::BytesMut;
 use nom::{bytes::{complete::tag, streaming::take_while1}, character::is_alphabetic};
+use rtcp::parser::parser_request_line;
 use tokio::{
     io::{self, split, AsyncReadExt, AsyncWriteExt},
     net::{
@@ -83,30 +84,30 @@ impl HttpTransformer {
     }
 
     pub async fn run(&mut self) -> io::Result<()> {
-        let mut buf = BytesMut::with_capacity(4 * 1024);
+        // let mut buf = BytesMut::with_capacity(4 * 1024);
+        let mut vec = Vec::new();
+        let a = self.tcp.read_to_end(&mut vec).await.unwrap();
+        println!("读取大小{a}读取内容{:?}", String::from_utf8(vec.clone()));
+        let res = parser_request_line(vec.as_slice());
+        println!("{:?}", res);
+        // loop {
+        //     match self.tcp.read_buf(&mut buf).await {
+        //         Ok(size) => {
+        //             // self.parse_header(&mut buf)?;
 
-        loop {
-            match self.tcp.read_buf(&mut buf).await {
-                Ok(size) => {
-                    // self.parse_header(&mut buf)?;
+        //             if size == 0 {
+        //                 println!("✅退出");
+        //                 break;
+        //             }
 
-                    if size == 0 {
-                        println!("✅退出");
-                        break;
-                    }
-
-                    println!("读取大小:{:?}", size);
-                }
-                Err(e) => {
-                    eprintln!("{e:?}");
-                    break;
-                }
-            };
-            // if n == 0 {
-            //     println!("读取完成");
-            //     break;
-            // }
-        }
+        //             println!("读取大小:{:?}", size);
+        //         }
+        //         Err(e) => {
+        //             eprintln!("{e:?}");
+        //             break;
+        //         }
+        //     };
+        // }
         // let a = self.parse_header(&mut buf)?;
         // println!("{:?}", buf);
         self.tcp
@@ -116,18 +117,4 @@ impl HttpTransformer {
 
         Ok(())
     }
-}
-
-#[test]
-fn prase_request_line() {
-    let line = b"Get /index.html HTTP/1.1\r\n";
-    let method = take_while1(is_alphabetic);
-    let space = take_while1(|c| c == ' ');
-    let url = take_while1(|c| c != ' ');
-    let is_version = |c| c >= b'0' && c <= b'9' || c == b'.';
-    let http = tag("HTTP/");
-    let version = take_while1(is_version);
-    let line_ending = tag("\r\n");
-
-    let method = take_while1(is_alphabetic);
 }

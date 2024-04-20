@@ -5,6 +5,8 @@ edition = "2021"
 default-run = "rtcp"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+path = "src/lib/lib.rs"
 
 [dependencies]
 tokio = { version = "^1.37", features = [
