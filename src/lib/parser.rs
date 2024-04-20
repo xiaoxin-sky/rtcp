@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use nom::{
     bytes::streaming::{tag, take_until},
-    error,
     sequence::{terminated, tuple},
     IResult, Parser,
 };
@@ -15,6 +14,13 @@ pub struct RequestLine {
     pub method: String,
     pub path: String,
     pub protocol: String,
+}
+
+impl RequestLine {
+    /// 转换成字节
+    pub fn to_byte(&self) -> Vec<u8> {
+        format!("{} {} {}\r\n", self.method, self.path, self.protocol).into_bytes()
+    }
 }
 
 pub type Headers = HashMap<String, String>;
@@ -59,7 +65,6 @@ pub fn parser_request_header(input: &[u8]) -> IResult<&[u8], RequestHeader> {
         ),
     ))
 }
-
 
 /// 解析请求首部，一次性解析完全头部
 pub fn parser_request_head_all(input: &[u8]) -> IResult<&[u8], (RequestLine, Headers)> {

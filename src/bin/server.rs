@@ -1,18 +1,11 @@
-use std::{
-    collections::HashMap,
-    io::BufRead,
-    marker::PhantomPinned,
-};
+use std::{collections::HashMap, io::Error, marker::PhantomPinned};
 
-use bytes::BytesMut;
-use nom::{bytes::{complete::tag, streaming::take_while1}, character::is_alphabetic};
-use rtcp::parser::parser_request_line;
+use bytes::{Buf, BufMut, Bytes, BytesMut};
+use headers::{Header, HeaderMapExt};
+use rtcp::parser::{parser_request_head_all, RequestLine};
 use tokio::{
-    io::{self, split, AsyncReadExt, AsyncWriteExt},
-    net::{
-        tcp::{OwnedReadHalf, OwnedWriteHalf},
-        TcpListener, TcpStream,
-    },
+    io::{self, AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
 };
 
 #[tokio::main]
@@ -26,94 +19,157 @@ async fn main() -> io::Result<()> {
             println!("{ip}");
 
             let mut http_transformer = HttpTransformer::new(tcp_stream);
-            // http_transformer.rewrite_host("127.0.0.1".to_string()).await;
-            http_transformer.run().await;
+            let _ = http_transformer.run().await;
         });
     }
 }
 
 struct HttpTransformer {
-    headers: HashMap<String, String>,
     tcp: TcpStream,
+
+    /// 请求首部
+    request_head: Option<RequestHead>,
+
+    /// 请求体信息
+    /// 可能没有请求体
+    request_body_state: Option<RequestBodyState>,
     _marker: PhantomPinned,
+}
+
+/// 请求首部
+struct RequestHead {
+    request_line: RequestLine,
+    headers: HashMap<String, String>,
+}
+
+impl RequestHead {
+    /// 构造请求头
+    pub fn build_request_head(&mut self) -> BytesMut {
+        let request_line_byte = self.request_line.to_byte();
+
+        let mut request_head = BytesMut::from_iter(request_line_byte);
+
+        for (key, value) in self.headers.iter_mut() {
+            let header = format!("{}: {}\r\n", key, value);
+            request_head.put_slice(header.as_bytes());
+            // request_head.extend_from_slice(key.as_bytes());
+            // request_head.extend_from_slice(b": ");
+            // request_head.extend_from_slice(value.as_bytes());
+            // request_head.extend_from_slice(b"\r\n");
+        }
+
+        request_head.put_slice(b"\r\n");
+
+        request_head
+    }
+
+    /// 获取请求头长度
+    pub fn get_content_length(&self) -> Option<String> {
+        self.headers.get("Content-Length").cloned()
+    }
+}
+
+struct RequestBodyState {
+    /// 请求体开始位置
+    request_body_index: usize,
 }
 
 impl HttpTransformer {
     pub fn new(tcp_stream: TcpStream) -> Self {
         Self {
-            headers: HashMap::new(),
             tcp: tcp_stream,
+            request_body_state: None,
+            request_head: None,
             _marker: PhantomPinned,
         }
     }
 
-    // pub async fn rewrite_host(&mut self, new_host: String) {
-    //     self.host = Some(new_host);
-    // }
-
     /// 解析请求头
-    fn parse_header(&mut self, buf: &mut BytesMut) -> io::Result<bool> {
-        let lines = buf.lines();
-        for row in lines.into_iter() {
-            match row {
-                Ok(line) => {
-                    if line.is_empty() {
-                        continue;
-                    }
-
-                    // if line.starts_with(""){}
-                    // 匹配第一个冒号，作为key，剩余的作为 value
-                    let mut a = line.splitn(2, ':');
-                    let key = a.next().unwrap_or("");
-                    let value = a.next().unwrap_or("");
-                    if value.eq("") || key.eq("") {
-                        continue;
-                    }
-                    self.headers
-                        .insert(key.trim().to_string(), value.trim().to_string());
-                    println!("{key}:{value}");
-                }
-                Err(e) => {
-                    eprintln!("❌{e:?}");
-                    return Err(e);
-                }
+    fn parse_header(&mut self, buf: &mut BytesMut) -> Result<usize, ()> {
+        match parser_request_head_all(buf) {
+            Ok((rest, (request_line, headers))) => {
+                self.request_head = Some(RequestHead {
+                    request_line,
+                    headers,
+                });
+                let head_len = buf.len() - rest.len();
+                Ok(head_len)
             }
+            Err(_) => Err(()),
         }
-        println!("{:?}", self.headers);
-        Ok(false)
     }
 
+    /// 转发数据
+    // fn proxy(){
+    //     // 转换请求头
+    //     if let Some(val) = self.headers.get_mut("Host") {
+    //         *val = "127.0.0.1:9930".to_string();
+    //     };
+
+    //     // 替换原始请求头,并写入
+    //     let head_byte = self.build_request_head();
+    //     let _ = self.tcp.write_all(&head_byte).await;
+
+    //     buf.advance(size);
+
+    //     let _ = self.tcp.write_all(&buf).await;
+
+    //     println!("读取大小:{:?},剩余长度{}", size, buf.len());
+    // }
+
     pub async fn run(&mut self) -> io::Result<()> {
-        // let mut buf = BytesMut::with_capacity(4 * 1024);
-        let mut vec = Vec::new();
-        let a = self.tcp.read_to_end(&mut vec).await.unwrap();
-        println!("读取大小{a}读取内容{:?}", String::from_utf8(vec.clone()));
-        let res = parser_request_line(vec.as_slice());
-        println!("{:?}", res);
-        // loop {
-        //     match self.tcp.read_buf(&mut buf).await {
-        //         Ok(size) => {
-        //             // self.parse_header(&mut buf)?;
+        let mut buf = BytesMut::with_capacity(4 * 1024);
 
-        //             if size == 0 {
-        //                 println!("✅退出");
-        //                 break;
-        //             }
+        let start = std::time::Instant::now();
+        loop {
+            match self.tcp.read_buf(&mut buf).await {
+                Ok(size) => {
+                    if size == 0 {
+                        println!("✅退出");
+                        break;
+                    }
 
-        //             println!("读取大小:{:?}", size);
-        //         }
-        //         Err(e) => {
-        //             eprintln!("{e:?}");
-        //             break;
-        //         }
-        //     };
-        // }
-        // let a = self.parse_header(&mut buf)?;
-        // println!("{:?}", buf);
-        self.tcp
+                    if self.request_head.is_none() {
+                        // 头部没有读取完整，继续读取
+                        let res = self.parse_header(&mut buf);
+                        if res.is_err() {
+                            continue;
+                        }
+
+                        // 头部解析完之后，丢弃掉头部的数据
+                        let head_len = res.unwrap();
+                        buf.advance(head_len);
+                    }
+
+
+                    let request_head = self.request_head.as_ref().unwrap();
+                    if let Some(content_len) = request_head.get_content_length() {
+                        if content_len == "0" {
+                            break;
+                        }
+                        if content_len.parse::<usize>().unwrap() == buf.len() {
+                            break;
+                        }
+                    };
+                }
+                Err(e) => {
+                    eprintln!("{e:?}");
+                    break;
+                }
+            };
+        }
+        let end = std::time::Instant::now();
+
+        println!("读取耗时:{:?}", end.duration_since(start));
+
+        let start = std::time::Instant::now();        
+        let _ = self
+            .tcp
             .write_all(b"HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\n\r\nhello world!")
             .await;
-        self.tcp.flush().await;
+        let _ = self.tcp.flush().await;
+        let end = std::time::Instant::now();
+        println!("写入耗时:{:?}", end.duration_since(start));
 
         Ok(())
     }
