@@ -8,18 +8,48 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 
+/// 创建通道服务器
+async fn create_connect_channel() -> io::Result<TcpStream> {
+    let tcp_listener = TcpListener::bind("0.0.0.0:5541").await?;
+    
+    loop {
+        match tcp_listener.accept().await {
+            Ok(stream) => {
+                println!("通道服务器连接成功");
+                return Ok(stream.0);
+            }
+            Err(e) => {
+                println!("❌通道服务器连接失败{:?}", e);
+                continue
+            },
+        };
+    }
+}
+
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    let client_tcp = create_connect_channel().await?;
+
+    let client_tcp = Arc::new(Mutex::new(client_tcp));
+
     let addr = "0.0.0.0:9931";
     let tcp_listener = TcpListener::bind(addr).await?;
     loop {
-        let (tcp_stream, socket_addr) = tcp_listener.accept().await?;
+        let (mut tcp_stream, socket_addr) = tcp_listener.accept().await?;
         tokio::spawn(async move {
             let ip = socket_addr.ip().to_string();
             println!("{ip}");
+            let mut buf = BytesMut::with_capacity(4 * 1024);
 
-            let mut http_transformer = HttpTransformer::new(tcp_stream);
-            let _ = http_transformer.run().await;
+            let read_res = tcp_stream.read_buf(&mut buf).await;
+            if read_res.is_err() {
+                eprintln!("读取错误{:?}", read_res);
+                return;
+            }
+            let read_res = read_res.unwrap();
+
+            // let mut http_transformer = HttpTransformer::new(tcp_stream);
+            // let _ = http_transformer.run().await;
         });
     }
 }
