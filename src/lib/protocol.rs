@@ -1,8 +1,9 @@
 use std::{fmt::Display, io};
 
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 use nom::{
     bytes::streaming::{tag, take_until},
+    error::Error,
     sequence::{preceded, terminated, tuple},
     Parser,
 };
@@ -18,7 +19,7 @@ pub type TransformationDataLen = usize;
 #[derive(Debug)]
 pub enum RTCPType {
     /// 初始化
-    Initialize,
+    Initialize(usize),
     /// 创建新链接，携带唯一id
     NewConnection,
     /// 互传数据，携带唯一id
@@ -30,14 +31,13 @@ pub enum RTCPType {
 impl RTCPType {
     /// Create a new RTCPType from the given string.
     pub fn new_from_str(s: &str) -> io::Result<RTCPType> {
-        // if s.starts_with("transformation") {
-        //     let size_str = &s["transformation:".len()..];
-        //     if let Ok(size) = size_str.parse::<usize>() {
-        //         return Ok(RTCPType::Transformation(size));
-        //     }
-        // }
+        if s.starts_with("initialize") {
+            let size_str = &s["initialize:".len()..];
+            if let Ok(size) = size_str.parse::<usize>() {
+                return Ok(RTCPType::Initialize(size));
+            }
+        }
         match s {
-            "initialize" => Ok(RTCPType::Initialize),
             "new_connection" => Ok(RTCPType::NewConnection),
             "close_connection" => Ok(RTCPType::CloseConnection),
             _ => Err(io::Error::new(
@@ -51,9 +51,8 @@ impl RTCPType {
 impl Display for RTCPType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RTCPType::Initialize => write!(f, "initialize"),
+            RTCPType::Initialize(port) => write!(f, "initialize:{port}"),
             RTCPType::NewConnection => write!(f, "new_connection"),
-            // RTCPType::Transformation(size) => write!(f, "transformation:{size}"),
             RTCPType::CloseConnection => write!(f, "close_connection"),
         }
     }
@@ -71,7 +70,7 @@ impl RTCPMessage {
     /// Create a new RTCPMessage with the specified type and data.
     pub fn new(message_type: RTCPType) -> Self {
         let connect_id = match message_type {
-            RTCPType::Initialize => None,
+            RTCPType::Initialize(_) => None,
             RTCPType::NewConnection => Some(Uuid::new_v4().to_string()),
             // other types of message,need return  None， if use other types of message, need use fromExactMessage fn
             _ => None,
@@ -85,37 +84,31 @@ impl RTCPMessage {
     /// Serialize the RTCPMessage into a byte array.
     /// the protocol formate type:
     /// ```
-    /// rtcp:message_type connect_id\r\n
-    /// bytes
+    /// message_type connect_id\r\n
     /// ```
-    pub fn serialize(&self) -> BytesMut {
+    pub fn serialize(&self) -> Bytes {
         // Serialize the message type and data into a byte array.
 
-        let mut frame = BytesMut::from(
+        return Bytes::copy_from_slice(
             format!(
-                "rtcp:{} {}\r\n",
+                "{} {}\r\n",
                 self.message_type,
                 self.connect_id.clone().unwrap_or_default()
             )
             .as_bytes(),
         );
-
-        frame
     }
 
     /// Deserialize the byte array into an RTCPMessage.
-    pub fn deserialize(mut input: BytesMut) -> io::Result<Self> {
+    pub fn deserialize(input: &[u8]) -> io::Result<(Self, usize)> {
         // Deserialize the byte array into an RTCPMessage.
 
         let parse_res = tuple((
-            preceded(
-                tag::<&str, &[u8], nom::error::Error<&[u8]>>("rtcp:"),
-                take_until(" "),
-            ),
+            take_until::<&str, &[u8], Error<&[u8]>>(" "),
             tag(" "),
             terminated(take_until("\r\n"), tag("\r\n")),
         ))
-        .parse(&input[..]);
+        .parse(input);
 
         if parse_res.is_err() {
             println!("❌{:?}", parse_res);
@@ -136,14 +129,19 @@ impl RTCPMessage {
             Some(String::from_utf8(connect_id.to_vec()).unwrap())
         };
 
-        let a = input.len() - output.len();
+        let msg_size = input.len() - output.len();
+        Ok((
+            Self {
+                message_type,
+                connect_id,
+            },
+            msg_size,
+        ))
+    }
 
-        input.advance(a);
-
-        Ok(Self {
-            message_type,
-            connect_id,
-        })
+    pub fn get_size(&self) -> usize {
+        return self.message_type.to_string().as_bytes().len()
+            + self.connect_id.clone().unwrap_or_default().as_bytes().len();
     }
 }
 
@@ -153,9 +151,9 @@ mod tests_protocol {
 
     #[test]
     fn test_serialize() {
-        let message = RTCPMessage::new(RTCPType::Initialize);
+        let message = RTCPMessage::new(RTCPType::Initialize(8830));
         let serialized = message.serialize();
-        let b = BytesMut::from("rtcp:initialize \r\n");
+        let b = BytesMut::from("initialize:8830 \r\n");
         assert_eq!(
             serialized, b,
             "检查序列化失败 a：{:?} b: {:?}",
@@ -165,9 +163,9 @@ mod tests_protocol {
 
     #[test]
     fn test_deserialize() {
-        let message = RTCPMessage::new(RTCPType::Initialize);
+        let message = RTCPMessage::new(RTCPType::Initialize(8830));
         let serialized = message.serialize();
-        let deserialized = RTCPMessage::deserialize(serialized.clone()).unwrap();
+        let (deserialized, size) = RTCPMessage::deserialize(&serialized).unwrap();
         assert_eq!(
             deserialized.connect_id, message.connect_id,
             "反检查序列化 connect_id 失败 {:?} - {:?}",
@@ -178,5 +176,6 @@ mod tests_protocol {
             message.message_type.to_string(),
             "反检查序列化 message_type 失败",
         );
+        assert_eq!(size, b"initialize:8830 \r\n".len(), "反检查序列化 size 失败");
     }
 }

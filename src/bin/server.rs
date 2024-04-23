@@ -35,20 +35,48 @@ async fn create_connect_channel() -> io::Result<()> {
     Ok(())
 }
 
-async fn client_handle(tcp: TcpStream) {
+async fn client_handle(mut tcp: TcpStream) {
     // tcp
     tokio::spawn(async move {
-        let buf = BytesMut::with_capacity(4 * 1024);
-        let rtcp_message = RTCPMessage::new(RTCPType::Initialize, BytesMut::new());
-        let a = RwLock::new(tcp);
+        let mut buf = BytesMut::with_capacity(4 * 1024);
 
         loop {
-            // let read_res = tcp.read_buf(&mut rtcp_message).await;
-            // if rtcp_message.lock().await.is_none() {}
+            let read_res = tcp.read_buf(&mut buf).await;
+            if read_res.is_err() {
+                println!("❌通道服务器读取失败{:?}", read_res);
+                break;
+            }
+            let read_res = read_res.unwrap();
+
+            let res = RTCPMessage::deserialize(&buf);
+
+            if res.is_err() {
+                println!("序列化失败,继续读取");
+                continue;
+            }
+
+            let (rtcp_message, size) = res.unwrap();
+
+            match rtcp_message.message_type {
+                RTCPType::Initialize(port) => {
+                    println!("收到初始化事件");
+                    match TcpListener::bind(format!("0.0.0.0:{port}")).await {
+                        Ok(listener) => {
+                            listener.
+                        },
+                        Err(e) => {
+                            println!("❌,创建代理服务器失败{:?}", e);
+                        },
+                    };
+                }
+                RTCPType::NewConnection => println!("无须实现连接事件"),
+                RTCPType::CloseConnection => println!("TODO: 关闭事件"),
+            }
         }
     });
 }
 
+// async fn create_proxy_server()
 #[tokio::main]
 async fn main() -> io::Result<()> {
     create_connect_channel().await?;
