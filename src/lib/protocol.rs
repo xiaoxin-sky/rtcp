@@ -22,7 +22,7 @@ pub enum RTCPType {
     /// 创建新链接，携带唯一id
     NewConnection,
     /// 互传数据，携带唯一id
-    Transformation(TransformationDataLen),
+    // Transformation(TransformationDataLen),
     /// 关闭
     CloseConnection,
 }
@@ -30,12 +30,12 @@ pub enum RTCPType {
 impl RTCPType {
     /// Create a new RTCPType from the given string.
     pub fn new_from_str(s: &str) -> io::Result<RTCPType> {
-        if s.starts_with("transformation") {
-            let size_str = &s["transformation:".len()..];
-            if let Ok(size) = size_str.parse::<usize>() {
-                return Ok(RTCPType::Transformation(size));
-            }
-        }
+        // if s.starts_with("transformation") {
+        //     let size_str = &s["transformation:".len()..];
+        //     if let Ok(size) = size_str.parse::<usize>() {
+        //         return Ok(RTCPType::Transformation(size));
+        //     }
+        // }
         match s {
             "initialize" => Ok(RTCPType::Initialize),
             "new_connection" => Ok(RTCPType::NewConnection),
@@ -53,7 +53,7 @@ impl Display for RTCPType {
         match self {
             RTCPType::Initialize => write!(f, "initialize"),
             RTCPType::NewConnection => write!(f, "new_connection"),
-            RTCPType::Transformation(size) => write!(f, "transformation:{size}"),
+            // RTCPType::Transformation(size) => write!(f, "transformation:{size}"),
             RTCPType::CloseConnection => write!(f, "close_connection"),
         }
     }
@@ -65,13 +65,11 @@ pub struct RTCPMessage {
     pub message_type: RTCPType,
     /// 连接id
     pub connect_id: ConnectId,
-    /// message data
-    pub data: BytesMut,
 }
 
 impl RTCPMessage {
     /// Create a new RTCPMessage with the specified type and data.
-    pub fn new(message_type: RTCPType, data: BytesMut) -> Self {
+    pub fn new(message_type: RTCPType) -> Self {
         let connect_id = match message_type {
             RTCPType::Initialize => None,
             RTCPType::NewConnection => Some(Uuid::new_v4().to_string()),
@@ -80,7 +78,6 @@ impl RTCPMessage {
         };
         Self {
             message_type,
-            data,
             connect_id,
         }
     }
@@ -102,8 +99,6 @@ impl RTCPMessage {
             )
             .as_bytes(),
         );
-
-        frame.extend_from_slice(&self.data);
 
         frame
     }
@@ -148,7 +143,6 @@ impl RTCPMessage {
         Ok(Self {
             message_type,
             connect_id,
-            data: input,
         })
     }
 }
@@ -159,9 +153,9 @@ mod tests_protocol {
 
     #[test]
     fn test_serialize() {
-        let message = RTCPMessage::new(RTCPType::Initialize, BytesMut::from("hello"));
+        let message = RTCPMessage::new(RTCPType::Initialize);
         let serialized = message.serialize();
-        let b = BytesMut::from("rtcp:initialize \r\nhello");
+        let b = BytesMut::from("rtcp:initialize \r\n");
         assert_eq!(
             serialized, b,
             "检查序列化失败 a：{:?} b: {:?}",
@@ -171,7 +165,7 @@ mod tests_protocol {
 
     #[test]
     fn test_deserialize() {
-        let message = RTCPMessage::new(RTCPType::Initialize, BytesMut::from("hello"));
+        let message = RTCPMessage::new(RTCPType::Initialize);
         let serialized = message.serialize();
         let deserialized = RTCPMessage::deserialize(serialized.clone()).unwrap();
         assert_eq!(
@@ -184,6 +178,5 @@ mod tests_protocol {
             message.message_type.to_string(),
             "反检查序列化 message_type 失败",
         );
-        assert_eq!(deserialized.data, message.data, "反检查序列化 data 失败",);
     }
 }
