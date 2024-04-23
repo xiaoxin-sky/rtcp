@@ -3,19 +3,19 @@ use std::{collections::HashMap, io::Error, marker::PhantomPinned, sync::Arc};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use headers::{Header, HeaderMapExt};
 use rtcp::{
+    manage::RTCPManager,
     parser::{parser_request_head_all, RequestLine},
     protocol::{RTCPMessage, RTCPType},
-    manage::RTCPManager,
 };
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
     join,
     net::{TcpListener, TcpStream},
-    sync::{mpsc, Mutex},
+    sync::{mpsc, Mutex, RwLock},
 };
 
 /// 创建通道服务器
-async fn create_connect_channel() -> io::Result<TcpStream> {
+async fn create_connect_channel() -> io::Result<()> {
     let tcp_listener = TcpListener::bind("0.0.0.0:5541").await?;
 
     loop {
@@ -23,10 +23,7 @@ async fn create_connect_channel() -> io::Result<TcpStream> {
             Ok(mut stream) => {
                 println!("通道服务器({:?})连接成功", stream.1);
 
-                let msg = RTCPMessage::new(RTCPType::Initialize, BytesMut::new());
-                stream.0.write_all(msg.serialize().as_ref()).await?;
-
-                return Ok(stream.0);
+                client_handle(stream.0).await;
             }
             Err(e) => {
                 println!("❌通道服务器连接失败{:?}", e);
@@ -34,130 +31,89 @@ async fn create_connect_channel() -> io::Result<TcpStream> {
             }
         };
     }
+
+    Ok(())
+}
+
+async fn client_handle(tcp: TcpStream) {
+    // tcp
+    tokio::spawn(async move {
+        let buf = BytesMut::with_capacity(4 * 1024);
+        let rtcp_message = RTCPMessage::new(RTCPType::Initialize, BytesMut::new());
+        let a = RwLock::new(tcp);
+
+        loop {
+            // let read_res = tcp.read_buf(&mut rtcp_message).await;
+            // if rtcp_message.lock().await.is_none() {}
+        }
+    });
 }
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let rtcp_manage = Arc::new(Mutex::new(RTCPManager::new()));
+    create_connect_channel().await?;
+    // let rtcp_manage = Arc::new(Mutex::new(RTCPManager::new()));
 
-    let client_server = tokio::spawn(async move {
-        let client_tcp = create_connect_channel().await?;
-        let client_tcp = Arc::new(Mutex::new(client_tcp));
-        let client_tcp_clone = client_tcp.clone();
-        let rtcp_message = Mutex::<Option<RTCPMessage>>::new(None);
-        let buf = Arc::new(Mutex::new(BytesMut::new()));
+    // let client_server = tokio::spawn(async move {
+    //     let client_tcp = create_connect_channel().await?;
+    //     let client_tcp = Arc::new(Mutex::new(client_tcp));
+    //     let client_tcp_clone = client_tcp.clone();
 
-        loop {
-            let buf_mut = buf.lock().await;
-            let mut buf = (*buf_mut).clone();
-            drop(buf_mut);
+    //     let rtcp_message = Mutex::<Option<RTCPMessage>>::new(None);
+    //     let buf = Arc::new(Mutex::new(BytesMut::new()));
 
-            let read_res = client_tcp_clone.lock().await.read_buf(&mut buf).await;
+    //     loop {
+    //         let buf_mut = buf.lock().await;
+    //         let mut buf = (*buf_mut).clone();
+    //         drop(buf_mut);
 
-            if read_res.is_err() {
-                println!("❌通道服务器读取失败{:?}", read_res);
-                break;
-            }
+    //         let read_res = client_tcp_clone.lock().await.read_buf(&mut buf).await;
 
-            let read_res = read_res.unwrap();
+    //         if read_res.is_err() {
+    //             println!("❌通道服务器读取失败{:?}", read_res);
+    //             break;
+    //         }
 
-            if rtcp_message.lock().await.is_none() {
-                match RTCPMessage::deserialize(buf) {
-                    Ok(res) => {
-                        let mut rtcp_message_mut = rtcp_message.lock().await;
-                        *rtcp_message_mut = Some(res);
-                    }
-                    Err(e) => {
-                        println!("序列化失败,继续读取{:?}", e);
-                        continue;
-                    }
-                };
-            }
+    //         let read_res = read_res.unwrap();
 
-            let mut rtcp_message_mutex = rtcp_message.lock().await;
+    //         if rtcp_message.lock().await.is_none() {
+    //             match RTCPMessage::deserialize(buf) {
+    //                 Ok(res) => {
+    //                     let mut rtcp_message_mut = rtcp_message.lock().await;
+    //                     *rtcp_message_mut = Some(res);
+    //                 }
+    //                 Err(e) => {
+    //                     println!("序列化失败,继续读取{:?}", e);
+    //                     continue;
+    //                 }
+    //             };
+    //         }
 
-            /// 这里其实可以不需要判断
-            if rtcp_message_mutex.is_none() {
-                continue;
-            }
+    //         let mut rtcp_message_mutex = rtcp_message.lock().await;
 
-            let rtcp_message = rtcp_message_mutex.as_mut().unwrap();
-            match rtcp_message.message_type {
-                // client 、 server  都需要实现
-                RTCPType::Transformation(data_len) => {
-                    if rtcp_message.data.len() < data_len {
-                        continue;
-                    }
-                    // let mut buf = BytesMut::with_capacity(data_len);
-                    // 获取 date_len 的数据给 用户 client tcp
-                    //
-                    println!("TODO:aaa");
-                    // 发送完毕之后吃掉发送的长度，然后再继续读取
-                    rtcp_message.data.advance(data_len);
-                    *rtcp_message_mutex = None;
-                    // 读取下一条数据
-                    continue;
-                }
-                RTCPType::CloseConnection => {
-                    break;
-                }
-                // 其他 arm 需要 client 实现
-                _ => {
-                    println!("收到事件{}", rtcp_message.message_type);
-                    // 读取下一条数据
-                    continue;
-                }
-            }
-        }
+    //         // 这里其实可以不需要判断
+    //         if rtcp_message_mutex.is_none() {
+    //             continue;
+    //         }
 
-        Ok::<_, io::Error>(())
-    });
+    //         let rtcp_message = rtcp_message_mutex.as_mut().unwrap();
+    //         match rtcp_message.message_type {
+    //             RTCPType::CloseConnection => {
+    //                 break;
+    //             }
+    //             // 其他 arm 需要 client 实现
+    //             _ => {
+    //                 println!("收到事件{}", rtcp_message.message_type);
+    //                 // 读取下一条数据
+    //                 continue;
+    //             }
+    //         }
+    //     }
 
+    //     Ok::<_, io::Error>(())
+    // });
 
-    let user_server = tokio::spawn(async move {
-        let addr = "0.0.0.0:9931";
-        let tcp_listener = TcpListener::bind(addr).await?;
-
-        loop {
-            // let client_tcp = client_tcp_clone1.clone();
-            let (tcp_stream, socket_addr) = tcp_listener.accept().await?;
-            tokio::spawn(async move {
-                println!("{socket_addr}");
-
-                // 解析并转换用户请求
-                let mut http_transformer = HttpTransformer::new(tcp_stream);
-
-                let body_buf = http_transformer.run().await?;
-
-                let head_buf = http_transformer.request_head.unwrap().build_request_head();
-
-                // 收到新连接事件，构造消息
-                let msg = RTCPMessage::new(RTCPType::NewConnection, head_buf);
-
-                // 发送创建连接事件
-                // client_tcp.lock().await.write_all(&msg.serialize()).await?;
-
-                // // 转发数据
-                // let msg = RTCPMessage {
-                //     message_type: RTCPType::Transformation(body_buf.len()),
-                //     connect_id: msg.connect_id.clone(),
-                //     data: body_buf,
-                // };
-
-                // // 发送data
-                // client_tcp.lock().await.write_all(&msg.serialize()).await?;
-
-                // // 刷新缓冲
-                // client_tcp.lock().await.flush().await?;
-
-                Ok::<_, io::Error>(())
-            });
-        }
-
-        Ok::<_, io::Error>(())
-    });
-
-    let _res = join!(client_server, user_server);
+    // client_server.await?;
 
     Ok(())
 }

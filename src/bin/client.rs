@@ -13,7 +13,7 @@ async fn main() {
     let tcp = TcpSocket::new_v4().unwrap();
     let mut client_stream = tcp.connect(addr).await.unwrap();
 
-    let init_msg = RTCPMessage::new(rtcp::protocol::RTCPType::Initialize, BytesMut::from(""));
+    let init_msg = RTCPMessage::new(rtcp::protocol::RTCPType::Initialize);
 
     client_stream
         .write_all(&init_msg.serialize())
@@ -37,9 +37,9 @@ async fn main() {
                     rtcp::protocol::RTCPType::NewConnection => {
                         println!("收到新连接: {:?}", rtcp_msg.connect_id);
                     }
-                    rtcp::protocol::RTCPType::Transformation(byte_size) => {
-                        println!("收到数据，长度: {}", byte_size);
-                    }
+                    // rtcp::protocol::RTCPType::Transformation(byte_size) => {
+                    //     println!("收到数据，长度: {}", byte_size);
+                    // }
                     rtcp::protocol::RTCPType::CloseConnection => {
                         println!("关闭连接")
                     }
