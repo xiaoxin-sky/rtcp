@@ -5,11 +5,13 @@ use headers::{Header, HeaderMapExt};
 use rtcp::{
     parser::{parser_request_head_all, RequestLine},
     protocol::{RTCPMessage, RTCPType},
+    manage::RTCPManager,
 };
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
+    join,
     net::{TcpListener, TcpStream},
-    sync::Mutex,
+    sync::{mpsc, Mutex},
 };
 
 /// 创建通道服务器
@@ -36,18 +38,19 @@ async fn create_connect_channel() -> io::Result<TcpStream> {
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let client_tcp = create_connect_channel().await?;
+    let rtcp_manage = Arc::new(Mutex::new(RTCPManager::new()));
 
-    let mut client_tcp = Arc::new(Mutex::new(client_tcp));
-
-    let client_tcp_clone = client_tcp.clone();
-    tokio::spawn(async move {
+    let client_server = tokio::spawn(async move {
+        let client_tcp = create_connect_channel().await?;
+        let client_tcp = Arc::new(Mutex::new(client_tcp));
+        let client_tcp_clone = client_tcp.clone();
         let rtcp_message = Mutex::<Option<RTCPMessage>>::new(None);
-        let mut buf = Arc::new(Mutex::new(BytesMut::new()));
+        let buf = Arc::new(Mutex::new(BytesMut::new()));
 
         loop {
-            let mut buf_clone = buf.clone();
-            let mut buf = buf.lock().await.as_mut();
+            let buf_mut = buf.lock().await;
+            let mut buf = (*buf_mut).clone();
+            drop(buf_mut);
 
             let read_res = client_tcp_clone.lock().await.read_buf(&mut buf).await;
 
@@ -57,8 +60,6 @@ async fn main() -> io::Result<()> {
             }
 
             let read_res = read_res.unwrap();
-
-            let  buf: tokio::sync::MutexGuard<'_, BytesMut> = buf_clone.lock().await;
 
             if rtcp_message.lock().await.is_none() {
                 match RTCPMessage::deserialize(buf) {
@@ -90,48 +91,75 @@ async fn main() -> io::Result<()> {
                     // let mut buf = BytesMut::with_capacity(data_len);
                     // 获取 date_len 的数据给 用户 client tcp
                     //
-                    todo!();
+                    println!("TODO:aaa");
                     // 发送完毕之后吃掉发送的长度，然后再继续读取
                     rtcp_message.data.advance(data_len);
                     *rtcp_message_mutex = None;
                     // 读取下一条数据
                     continue;
                 }
+                RTCPType::CloseConnection => {
+                    break;
+                }
                 // 其他 arm 需要 client 实现
-                _ => todo!(),
-            }
-
-            // 关闭连接
-            if read_res == 0 {
-                println!("✅通道服务器读取结束");
-
-                break;
+                _ => {
+                    println!("收到事件{}", rtcp_message.message_type);
+                    // 读取下一条数据
+                    continue;
+                }
             }
         }
+
+        Ok::<_, io::Error>(())
     });
 
+
+    let user_server = tokio::spawn(async move {
+        let addr = "0.0.0.0:9931";
+        let tcp_listener = TcpListener::bind(addr).await?;
+
+        loop {
+            // let client_tcp = client_tcp_clone1.clone();
+            let (tcp_stream, socket_addr) = tcp_listener.accept().await?;
+            tokio::spawn(async move {
+                println!("{socket_addr}");
+
+                // 解析并转换用户请求
+                let mut http_transformer = HttpTransformer::new(tcp_stream);
+
+                let body_buf = http_transformer.run().await?;
+
+                let head_buf = http_transformer.request_head.unwrap().build_request_head();
+
+                // 收到新连接事件，构造消息
+                let msg = RTCPMessage::new(RTCPType::NewConnection, head_buf);
+
+                // 发送创建连接事件
+                // client_tcp.lock().await.write_all(&msg.serialize()).await?;
+
+                // // 转发数据
+                // let msg = RTCPMessage {
+                //     message_type: RTCPType::Transformation(body_buf.len()),
+                //     connect_id: msg.connect_id.clone(),
+                //     data: body_buf,
+                // };
+
+                // // 发送data
+                // client_tcp.lock().await.write_all(&msg.serialize()).await?;
+
+                // // 刷新缓冲
+                // client_tcp.lock().await.flush().await?;
+
+                Ok::<_, io::Error>(())
+            });
+        }
+
+        Ok::<_, io::Error>(())
+    });
+
+    let _res = join!(client_server, user_server);
+
     Ok(())
-
-    // let addr = "0.0.0.0:9931";
-    // let tcp_listener = TcpListener::bind(addr).await?;
-    // loop {
-    //     let (mut tcp_stream, socket_addr) = tcp_listener.accept().await?;
-    //     tokio::spawn(async move {
-    //         let ip = socket_addr.ip().to_string();
-    //         println!("{ip}");
-    //         let mut buf = BytesMut::with_capacity(4 * 1024);
-
-    //         let read_res = tcp_stream.read_buf(&mut buf).await;
-    //         if read_res.is_err() {
-    //             eprintln!("读取错误{:?}", read_res);
-    //             return;
-    //         }
-    //         let read_res = read_res.unwrap();
-
-    //         // let mut http_transformer = HttpTransformer::new(tcp_stream);
-    //         // let _ = http_transformer.run().await;
-    //     });
-    // }
 }
 
 struct HttpTransformer {
@@ -227,10 +255,9 @@ impl HttpTransformer {
     //     println!("读取大小:{:?},剩余长度{}", size, buf.len());
     // }
 
-    pub async fn run(&mut self) -> io::Result<()> {
+    pub async fn run(&mut self) -> io::Result<BytesMut> {
         let mut buf = BytesMut::with_capacity(4 * 1024);
 
-        let start = std::time::Instant::now();
         loop {
             match self.tcp.read_buf(&mut buf).await {
                 Ok(size) => {
@@ -267,22 +294,6 @@ impl HttpTransformer {
                 }
             };
         }
-        println!("读取结束");
-        let end = std::time::Instant::now();
-
-        println!("读取耗时:{:?}", end.duration_since(start));
-
-        let _ = self
-            .tcp
-            .write(b"HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: text/html;charset=utf-8\r\n\r\n")
-            .await;
-
-        let _ = self
-            .tcp
-            .write(format!("{}MiByte", ((buf.len() as f64) / 1024.0 / 1024.0)).as_bytes())
-            .await;
-        let _ = self.tcp.flush().await;
-
-        Ok(())
+        Ok(buf)
     }
 }
