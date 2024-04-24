@@ -85,6 +85,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "deadpool"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff0fc28638c21092aba483136debc6e177fff3dace8c835d715866923b03323e"
+dependencies = [
+ "deadpool-runtime",
+ "num_cpus",
+ "tokio",
+]
+
+[[package]]
+name = "deadpool-runtime"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63dfa964fe2a66f3fde91fc70b267fe193d822c7e603e2a675a49a7f46ad3f49"
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -318,6 +335,7 @@ name = "rtcp"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "deadpool",
  "headers",
  "nom",
  "tokio",
