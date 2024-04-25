@@ -10,12 +10,13 @@ path = "src/lib/lib.rs"
 
 [dependencies]
 tokio = { version = "^1.37", features = [
-  "rt",
-  "net",
-  "macros",
-  "rt-multi-thread",
-  "io-util",
-  "sync",
+  # "rt",
+  # "net",
+  # "macros",
+  # "rt-multi-thread",
+  # "io-util",
+  # "sync",
+  "full"
 ] }
 bytes = "1.6"
 nom = "7.1.3"

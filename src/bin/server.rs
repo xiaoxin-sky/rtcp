@@ -1,11 +1,13 @@
-use std::{collections::HashMap, io::Error, marker::PhantomPinned, sync::Arc};
+use std::{collections::HashMap, marker::PhantomPinned, sync::Arc, thread::sleep, time::Duration};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use headers::{Header, HeaderMapExt};
+use deadpool::unmanaged;
+use headers::{Header, HeaderMapExt, Server};
 use rtcp::{
     manage::RTCPManager,
     parser::{parser_request_head_all, RequestLine},
     protocol::{RTCPMessage, RTCPType},
+    tcp_pool::{Pool, TcpPoolManager, TcpStreamData},
 };
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
@@ -14,39 +16,64 @@ use tokio::{
     sync::{mpsc, Mutex, RwLock},
 };
 
-/// 创建通道服务器
-async fn create_connect_channel() -> io::Result<()> {
-    let tcp_listener = TcpListener::bind("0.0.0.0:5541").await?;
-
-    loop {
-        match tcp_listener.accept().await {
-            Ok(mut stream) => {
-                println!("通道服务器({:?})连接成功", stream.1);
-
-                client_handle(stream.0).await;
-            }
-            Err(e) => {
-                println!("❌通道服务器连接失败{:?}", e);
-                continue;
-            }
-        };
-    }
-
-    Ok(())
+pub struct RTcpServer {
+    pub tcp_pool: Arc<unmanaged::Pool<TcpStreamData>>,
 }
 
-async fn client_handle(mut tcp: TcpStream) {
-    // tcp
-    tokio::spawn(async move {
-        let mut buf = BytesMut::with_capacity(4 * 1024);
+impl RTcpServer {
+    pub async fn new() -> Self {
+        let tcp_pool = unmanaged::Pool::new(1000);
+        Self {
+            tcp_pool: Arc::new(tcp_pool),
+        }
+    }
+
+    /// 创建通道服务器
+    pub async fn create_connect_channel(self) -> io::Result<()> {
+        let tcp_listener = TcpListener::bind("0.0.0.0:5541").await?;
+        let this = Arc::new(self);
 
         loop {
-            let read_res = tcp.read_buf(&mut buf).await;
-            if read_res.is_err() {
-                println!("❌通道服务器读取失败{:?}", read_res);
-                break;
+            let this = this.clone();
+            match tcp_listener.accept().await {
+                Ok(stream) => {
+                    let _ = tokio::spawn(async move {
+                        this.client_handle(stream.0).await?;
+                        Ok::<_, io::Error>(())
+                    })
+                    .await?;
+                }
+                Err(e) => {
+                    println!("❌通道接收失败{:?}", e);
+                    continue;
+                }
+            };
+        }
+    }
+
+    async fn client_handle(&self, mut tcp: TcpStream) -> io::Result<()> {
+        let msg = self.read_msg(&mut tcp).await?;
+        match msg.message_type {
+            RTCPType::Initialize(port) => {
+                println!("通讯连接成功");
+                let a = self.create_proxy_server().await;
+                let b = self.create_user_server(port, tcp).await;
+                let res = tokio::join!(a, b);
+                println!("结束{:?}", res);
             }
-            let read_res = read_res.unwrap();
+            RTCPType::NewConnection => {
+                println!("🔥不需要实现")
+            }
+            RTCPType::CloseConnection => println!("🔥不需要实现"),
+        }
+
+        Ok(())
+    }
+
+    async fn read_msg(&self, tcp: &mut TcpStream) -> io::Result<RTCPMessage> {
+        let mut buf = BytesMut::with_capacity(4 * 1024);
+        loop {
+            tcp.read_buf(&mut buf).await?;
 
             let res = RTCPMessage::deserialize(&buf);
 
@@ -55,93 +82,89 @@ async fn client_handle(mut tcp: TcpStream) {
                 continue;
             }
 
-            let (rtcp_message, size) = res.unwrap();
+            let (rtcp_message, _size) = res.unwrap();
 
-            match rtcp_message.message_type {
-                RTCPType::Initialize(port) => {
-                    println!("收到初始化事件");
-                    match TcpListener::bind(format!("0.0.0.0:{port}")).await {
-                        Ok(listener) => {
-                            listener.
-                        },
-                        Err(e) => {
-                            println!("❌,创建代理服务器失败{:?}", e);
-                        },
-                    };
-                }
-                RTCPType::NewConnection => println!("无须实现连接事件"),
-                RTCPType::CloseConnection => println!("TODO: 关闭事件"),
-            }
+            return Ok(rtcp_message);
         }
-    });
+    }
+
+    /// 创建用户服务器
+    /// 用于接收用户请求，并把请求转发给代理服务器
+    async fn create_user_server(
+        &self,
+        port: usize,
+        mut tcp: TcpStream,
+    ) -> tokio::task::JoinHandle<()> {
+        let tcp_pool = self.tcp_pool.clone();
+
+        tokio::spawn(async move {
+            let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await.unwrap();
+            println!("✅[{port}]用户服务器端口启动成功");
+            let tcp_pool = tcp_pool.clone();
+
+            loop {
+                let (mut user_tcp, _user_addr) = listener.accept().await.unwrap();
+                let tcp_pool = tcp_pool.clone();
+
+                let pool_status = tcp_pool.status();
+                println!("收到请求:{_user_addr}  {pool_status:?}");
+
+                if pool_status.available == 0 {
+                    println!("🚀连接池已满,发送创建新链接消息");
+                    let msg = RTCPMessage::new(RTCPType::NewConnection);
+                    let _ = tcp.write_all(&msg.serialize()).await;
+                    let _ = tcp.flush().await;
+                }
+                let mut client_tcp = tcp_pool.get().await.unwrap();
+                tokio::spawn(async move {
+                    loop {
+                        let (mut r, mut w) = client_tcp.stream.split();
+                        let (mut r1, mut w1) = user_tcp.split();
+                        let res = tokio::select! {
+                            res = io::copy(&mut r, &mut w1) => res,
+                            res = io::copy(&mut r1, &mut w) => res,
+                        }
+                        .unwrap();
+                        println!("传输结果{:?}", res);
+                        if res == 0 {
+                            break;
+                        }
+                    }
+                });
+            }
+        })
+    }
+
+    /// 创建代理服务器
+    /// 用于接收 client 端的 tcp 连接，并把该连接加入到连接池中
+    async fn create_proxy_server(&self) -> tokio::task::JoinHandle<()> {
+        let tcp_pool = self.tcp_pool.clone();
+        tokio::spawn(async move {
+            let listener = TcpListener::bind("0.0.0.0:5533").await.unwrap();
+            loop {
+                let res = listener.accept().await;
+                if res.is_err() {
+                    println!("❌获取代理连接失败{:?}", res);
+                    break;
+                }
+                let (proxy_client, _) = res.unwrap();
+                match tcp_pool.add(TcpStreamData::new(proxy_client)).await {
+                    Ok(_) => println!("🚀 新1个代理客户端连接成功"),
+                    Err(e) => {
+                        println!("❌代理连接添加失败{:?}", e.1);
+                        break;
+                    }
+                };
+            }
+        })
+    }
 }
 
 // async fn create_proxy_server()
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    create_connect_channel().await?;
-    // let rtcp_manage = Arc::new(Mutex::new(RTCPManager::new()));
-
-    // let client_server = tokio::spawn(async move {
-    //     let client_tcp = create_connect_channel().await?;
-    //     let client_tcp = Arc::new(Mutex::new(client_tcp));
-    //     let client_tcp_clone = client_tcp.clone();
-
-    //     let rtcp_message = Mutex::<Option<RTCPMessage>>::new(None);
-    //     let buf = Arc::new(Mutex::new(BytesMut::new()));
-
-    //     loop {
-    //         let buf_mut = buf.lock().await;
-    //         let mut buf = (*buf_mut).clone();
-    //         drop(buf_mut);
-
-    //         let read_res = client_tcp_clone.lock().await.read_buf(&mut buf).await;
-
-    //         if read_res.is_err() {
-    //             println!("❌通道服务器读取失败{:?}", read_res);
-    //             break;
-    //         }
-
-    //         let read_res = read_res.unwrap();
-
-    //         if rtcp_message.lock().await.is_none() {
-    //             match RTCPMessage::deserialize(buf) {
-    //                 Ok(res) => {
-    //                     let mut rtcp_message_mut = rtcp_message.lock().await;
-    //                     *rtcp_message_mut = Some(res);
-    //                 }
-    //                 Err(e) => {
-    //                     println!("序列化失败,继续读取{:?}", e);
-    //                     continue;
-    //                 }
-    //             };
-    //         }
-
-    //         let mut rtcp_message_mutex = rtcp_message.lock().await;
-
-    //         // 这里其实可以不需要判断
-    //         if rtcp_message_mutex.is_none() {
-    //             continue;
-    //         }
-
-    //         let rtcp_message = rtcp_message_mutex.as_mut().unwrap();
-    //         match rtcp_message.message_type {
-    //             RTCPType::CloseConnection => {
-    //                 break;
-    //             }
-    //             // 其他 arm 需要 client 实现
-    //             _ => {
-    //                 println!("收到事件{}", rtcp_message.message_type);
-    //                 // 读取下一条数据
-    //                 continue;
-    //             }
-    //         }
-    //     }
-
-    //     Ok::<_, io::Error>(())
-    // });
-
-    // client_server.await?;
+    let r_tcp_server = RTcpServer::new().await;
+    let _ = r_tcp_server.create_connect_channel().await;
 
     Ok(())
 }
