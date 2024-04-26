@@ -59,6 +59,7 @@ impl Display for RTCPType {
 }
 
 /// Represents a single RTCP message, which is used for communication between rtcp client and server.
+#[derive(Debug)]
 pub struct RTCPMessage {
     /// message type
     pub message_type: RTCPType,
@@ -111,7 +112,6 @@ impl RTCPMessage {
         .parse(input);
 
         if parse_res.is_err() {
-            println!("❌{:?}", parse_res);
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid rtcp message",

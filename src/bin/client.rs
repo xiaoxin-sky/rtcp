@@ -20,7 +20,7 @@ pub struct Client {
 
 impl Client {
     pub fn new() -> Self {
-        let mgr = TcpPoolManager::new("nestjs".to_string(), "127.0.0.1".to_string(), 3363);
+        let mgr = TcpPoolManager::new("nestjs".to_string(), "127.0.0.1".to_string(), 8082);
         let back_end_pool = Pool::builder(mgr).build().unwrap();
         Client { back_end_pool }
     }
@@ -37,11 +37,16 @@ impl Client {
             .await
             .unwrap();
         loop {
+            println!("等待读取消息");
             match self.read_msg(&mut client_stream).await {
-                Ok(msg) => self.msg_handel(msg).await,
+                Ok(msg) => {
+                    println!("{:?}", msg.message_type);
+                    self.msg_handel(msg).await;
+                }
                 Err(e) => {
                     println!("❌读取消息失败,{:?}", e);
-                    break;
+                    sleep(Duration::from_millis(500)).await;
+                    continue;
                 }
             };
         }
@@ -51,7 +56,7 @@ impl Client {
         let mut buf = BytesMut::with_capacity(4 * 1024);
         loop {
             tcp.read_buf(&mut buf).await?;
-            if buf.is_empty(){
+            if buf.is_empty() {
                 return Err(io::Error::new(io::ErrorKind::Other, "读取数据失败"));
             }
 
@@ -82,7 +87,7 @@ impl Client {
     /// 创建后端连接池
     async fn create_proxy_connection(&self) {
         let back_end_pool = self.back_end_pool.clone();
-        let _ = tokio::spawn(async move {
+        tokio::spawn(async move {
             let addr = "127.0.0.1:5533".parse().unwrap();
             let tcp = TcpSocket::new_v4().unwrap();
             let mut client_stream = tcp.connect(addr).await.unwrap();
@@ -94,6 +99,8 @@ impl Client {
                 // if res == 0 {
                 //     break;
                 // }
+                let peek_addr = client_stream.peer_addr();
+                println!("{:?}等待写入", peek_addr);
                 let mut b_tcp = back_end_pool.get().await.unwrap();
                 let (mut r, mut w) = b_tcp.stream.split();
                 let (mut r1, mut w1) = client_stream.split();
@@ -101,9 +108,10 @@ impl Client {
                 let res = tokio::select! {
                     res = io::copy(&mut r, &mut w1) => res,
                     res = io::copy(&mut r1, &mut w) => res,
-                }.unwrap();
+                }
+                .unwrap();
 
-                println!("写入完成:{:?}", res);
+                println!("{:?}写入完成:{:?}", peek_addr, res);
                 if res == 0 {
                     break;
                 }
@@ -145,8 +153,7 @@ impl Client {
             //         }
             //     }
             // }
-        })
-        .await;
+        });
     }
 }
 
