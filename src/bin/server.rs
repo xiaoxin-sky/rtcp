@@ -5,7 +5,6 @@ use std::{
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use deadpool::unmanaged::{self, Object};
-use headers::{Header, HeaderMapExt, Server};
 use rtcp::{
     manage::RTCPManager,
     parser::{parser_request_head_all, RequestLine},
@@ -22,6 +21,7 @@ use tokio::{
         Mutex, RwLock,
     },
     task::JoinHandle,
+    time::timeout,
 };
 
 pub struct RTcpServer {
@@ -70,9 +70,10 @@ impl RTcpServer {
                 println!("读取消息: {}", msg.message_type);
                 match msg.message_type {
                     RTCPType::Initialize(port) => {
-                        println!("通讯连接成功，启用代理服务器{port}");
-                        self.create_proxy_server().await;
+                       let proxy_server_handle =  self.create_proxy_server().await;
                         self.create_user_server(port, &mut tcp).await;
+                        proxy_server_handle.abort();
+                        println!("监测到client 断开，销毁全部✅");
                     }
                     RTCPType::NewConnection => {
                         println!("🔥不需要实现")
@@ -116,45 +117,84 @@ impl RTcpServer {
         }
         let listener = listener.unwrap();
         println!("✅[{port}]用户服务器端口启动成功");
-        let tcp_pool = self.tcp_pool.clone();
 
+        let (tx, mut rx) = mpsc::channel::<()>(100);
         loop {
-            let (mut user_tcp, _user_addr) = listener.accept().await.unwrap();
-            let tcp_pool = tcp_pool.clone();
 
-            let pool_status = tcp_pool.status();
-            println!("收到请求:{_user_addr}  {pool_status:?}");
+            let tx = tx.clone();
+            const TIMEOUT: Duration = Duration::from_millis(500);
+            if let Ok(Ok(res)) = timeout(TIMEOUT, listener.accept()).await {
+                let (mut user_tcp, _user_addr) = res;
+                let tcp_pool = self.tcp_pool.clone();
 
-            if pool_status.available == 0 {
-                println!("🚀连接池已满,发送创建新链接消息");
-                let msg = RTCPMessage::new(RTCPType::NewConnection);
-                let res = tcp.write_all(&msg.serialize()).await;
-                println!("写入创建新消息结果{:?}", res);
-                if res.is_err() {
-                    break;
-                }
-                let _ = tcp.flush().await;
-                println!(" 🚀发送创建新链接消息成功");
-            }
-            tokio::spawn(async move {
-                let mut client_tcp = tcp_pool.get().await.unwrap();
-                loop {
-                    let (mut r, mut w) = client_tcp.stream.split();
-                    let (mut r1, mut w1) = user_tcp.split();
-                    let res = tokio::select! {
-                        res = io::copy(&mut r, &mut w1) => res,
-                        res = io::copy(&mut r1, &mut w) => res,
-                    }
-                    .unwrap();
-                    println!("{_user_addr} 传输结束{:?}", res);
-                    if res == 0 {
+                let pool_status = tcp_pool.status();
+                println!("🚀收到请求:{_user_addr}  {pool_status:?}");
+
+                if pool_status.available == 0 {
+                    let msg = RTCPMessage::new(RTCPType::NewConnection);
+                    let res = tcp.write_all(&msg.serialize()).await;
+                    println!("🚀写入创建新消息结果{:?}", res);
+                    if res.is_err() {
                         break;
                     }
+                    let res = tcp.flush().await;
+                    println!("🚀发送创建新链接消息成功,{:?}", res);
                 }
-                let _ = Object::take(client_tcp);
-                let pool_status = tcp_pool.status();
-                println!("剩余{pool_status:?}");
-            });
+                tokio::spawn(async move {
+                    let mut client_tcp = tcp_pool.get().await.unwrap();
+                    let mut is_client_disconnect = false;
+                    loop {
+                        let (mut r, mut w) = client_tcp.stream.split();
+                        let (mut r1, mut w1) = user_tcp.split();
+                        let res = tokio::select! {
+                            res = io::copy(&mut r, &mut w1) => {
+                                println!("🌈代理池中tcp断开");
+                                is_client_disconnect = true;
+                                res
+                            },
+                            res = io::copy(&mut r1, &mut w) => {
+                                println!("🌈用户tcp断开");
+                                res
+                            },
+                        }
+                        .unwrap();
+                        println!("{_user_addr} 传输结束{:?}", res);
+                        if res == 0 {
+                            break;
+                        }
+                    }
+
+                    // 如果是代理客户端主动断开，则销毁当前连接
+                    if is_client_disconnect {
+                        tx.send(()).await;
+                        let _ = Object::take(client_tcp);
+                    }
+                });
+            };
+
+            match rx.try_recv() {
+                Ok(_) => {
+                    println!("用户连接关闭，需检查代理连接是否关闭");
+                    let mut buf = BytesMut::with_capacity(1);
+                    if let Ok(Ok(size)) =
+                        timeout(Duration::from_millis(300), tcp.peek(&mut buf)).await
+                    {
+                        if size == 0 {
+                            println!("代理端也关闭了，需销毁用户服务器和代理服务器");
+                            break;
+                        }
+                    };
+                }
+                Err(TryRecvError::Empty) => {
+                    println!("正常监听中");
+                    continue;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    println!("onshort 丢失，用户端断开");
+                }
+            };
+
+            println!(" ❌用户连接超时");
         }
     }
 
@@ -168,9 +208,9 @@ impl RTcpServer {
                 return;
             }
             let listener = listener.unwrap();
+            println!("✅代理服务器池监听启动成功");
 
             loop {
-                println!("进行");
                 let res = listener.accept().await;
                 if res.is_err() {
                     println!("❌获取代理连接失败{:?}", res);
@@ -178,7 +218,7 @@ impl RTcpServer {
                 }
                 let (proxy_client, _) = res.unwrap();
                 match tcp_pool.add(TcpStreamData::new(proxy_client)).await {
-                    Ok(_) => println!("🚀 新1个代理客户端连接成功"),
+                    Ok(_) => println!("✅ 收到1个代理客户端连接成功"),
                     Err(e) => {
                         println!("❌代理连接添加失败{:?}", e.1);
                         break;
