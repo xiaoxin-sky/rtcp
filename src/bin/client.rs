@@ -31,7 +31,7 @@ impl Client {
 
             let connect_res = tcp.connect(addr).await;
             if connect_res.is_err() {
-                println!("❌连接失败,{:?}", connect_res);
+                println!("❌连接失败，开始重试,{:?}", connect_res);
                 sleep(Duration::from_secs(1)).await;
                 continue;
             }
