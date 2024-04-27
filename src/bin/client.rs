@@ -1,8 +1,7 @@
-use std::
-    time::Duration
-;
+use std::{borrow::BorrowMut, time::Duration};
 
 use bytes::BytesMut;
+use deadpool::managed::Object;
 use rtcp::{
     protocol::{RTCPMessage, RTCPType},
     tcp_pool::{Pool, TcpPoolManager},
@@ -70,7 +69,7 @@ impl Client {
     /// parse rtcp protocol
     async fn parse_msg(&self, tcp: &mut TcpStream) -> io::Result<RTCPMessage> {
         let mut buf = BytesMut::with_capacity(4 * 1024);
-        
+
         loop {
             tcp.read_buf(&mut buf).await?;
             if buf.is_empty() {
@@ -92,72 +91,34 @@ impl Client {
     /// 创建后端连接池
     async fn create_proxy_connection(&self) {
         let back_end_pool = self.back_end_pool.clone();
+
         tokio::spawn(async move {
             let addr = "127.0.0.1:5533".parse().unwrap();
             let tcp = TcpSocket::new_v4().unwrap();
             let mut client_stream = tcp.connect(addr).await.unwrap();
 
-            // let mut data = BytesMut::with_capacity(4 * 1024);
             loop {
-                // let res = client_stream.read_buf(&mut data).await.unwrap();
-                // println!("读取结果:{:?}", res);
-                // if res == 0 {
-                //     break;
-                // }
-                let peek_addr = client_stream.peer_addr();
-                println!("{:?}等待写入", peek_addr);
                 let mut b_tcp = back_end_pool.get().await.unwrap();
                 let (mut r, mut w) = b_tcp.stream.split();
                 let (mut r1, mut w1) = client_stream.split();
 
-                let res = tokio::select! {
-                    res = io::copy(&mut r, &mut w1) => res,
-                    res = io::copy(&mut r1, &mut w) => res,
-                }
-                .unwrap();
+                let (is_back_end_close, size) = tokio::select! {
+                    res = io::copy(&mut r, &mut w1) => {
+                        (true,res.unwrap_or_default())
+                    },
+                    res = io::copy(&mut r1, &mut w) => {
+                        (false,res.unwrap_or_default())
+                    },
+                };
 
-                println!("{:?}写入完成:{:?}", peek_addr, res);
-                if res == 0 {
+                if size == 0 {
+                    if is_back_end_close {
+                        // drop back_end_tcp from pool
+                        let _ = Object::take(b_tcp);
+                    }
                     break;
                 }
             }
-
-            // loop {
-            //     match back_end_pool.get().await {
-            //         Ok(mut back_tcp) => {
-            //             let (mut s1_read, mut s1_write) = client_stream.split();
-
-            //             let (mut s2_read, mut s2_write) = back_tcp.stream.split();
-
-            //             loop {
-            //                 println!(" aaa转发请求");
-            //                 let res = io::copy(&mut s1_read, &mut s2_write).await;
-
-            //                 if res.is_err() {
-            //                     break;
-            //                 }
-            //                 let res = res.unwrap();
-            //                 println!("代理传输完成,{:?}", res);
-            //             }
-
-            //             loop {
-            //                 let res = io::copy(&mut s2_read, &mut s1_write).await;
-
-            //                 if res.is_err() {
-            //                     break;
-            //                 }
-            //                 let res = res.unwrap();
-            //                 println!("代理响应完成,{:?}", res);
-            //             }
-
-            //             println!("结束");
-            //         }
-            //         Err(e) => {
-            //             println!(" ❌获取后端 tcp链接失败: {:?}", e);
-            //             break;
-            //         }
-            //     }
-            // }
         });
     }
 }

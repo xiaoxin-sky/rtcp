@@ -1,8 +1,7 @@
-use deadpool::managed;
-use tokio::{
-    net::{TcpListener, TcpSocket, TcpStream},
-    sync::Mutex,
-};
+use deadpool::managed::{self};
+use tokio::
+    net::{TcpSocket, TcpStream}
+;
 
 pub struct TcpPoolManager {
     name: String,
@@ -21,9 +20,11 @@ impl TcpPoolManager {
     }
 }
 
+#[derive(Debug)]
 pub struct TcpStreamData {
     pub stream: TcpStream,
     pub id: uuid::Uuid,
+    pub disconnect: bool,
 }
 
 impl TcpStreamData {
@@ -31,6 +32,7 @@ impl TcpStreamData {
         TcpStreamData {
             stream,
             id: uuid::Uuid::new_v4(),
+            disconnect: false,
         }
     }
 }
@@ -53,7 +55,18 @@ impl managed::Manager for TcpPoolManager {
         obj: &mut Self::Type,
         metrics: &managed::Metrics,
     ) -> managed::RecycleResult<Self::Error> {
-        println!(" 🚀 回收 steam 成功");
+        // println!(" 🚀 回收 steam 成功");
+        // let mut buf = BytesMut::with_capacity(1);
+        // match obj.stream.peek(&mut buf).await {
+        //     Ok(size) => if size == 0 {
+        //         // 后端断开了，需要从池中销毁掉这个无效的 obj
+        //         Object::take(obj);
+        //         return  Ok(());
+        //         // return Err(deadpool::managed::RecycleError::Backend(Error::Fail));
+        //     },
+        //     Err(e) => {}
+        // };
+
         Ok(())
     }
 }
