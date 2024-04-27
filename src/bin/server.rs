@@ -1,26 +1,19 @@
 use std::{
-    borrow::BorrowMut, collections::HashMap, marker::PhantomPinned, ops::DerefMut, sync::Arc,
-    thread::sleep, time::Duration,
+    collections::HashMap, marker::PhantomPinned, sync::Arc,
+    time::Duration,
 };
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 use deadpool::unmanaged::{self, Object};
 use rtcp::{
-    manage::RTCPManager,
     parser::{parser_request_head_all, RequestLine},
     protocol::{RTCPMessage, RTCPType},
-    tcp_pool::{Pool, TcpPoolManager, TcpStreamData},
+    tcp_pool::TcpStreamData,
 };
 use tokio::{
-    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    join,
-    net::{tcp::WriteHalf, TcpListener, TcpStream},
-    sync::{
-        mpsc::{self, error::TryRecvError},
-        oneshot::{self, Sender},
-        Mutex, RwLock,
-    },
-    task::JoinHandle,
+    io::{self, AsyncRead, AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    sync::mpsc::{self, error::TryRecvError},
     time::timeout,
 };
 
@@ -43,6 +36,7 @@ impl RTcpServer {
 
         loop {
             let this = this.clone();
+            
             match tcp_listener.accept().await {
                 Ok(stream) => {
                     tokio::spawn(async move {
@@ -61,12 +55,14 @@ impl RTcpServer {
         tokio::spawn(async move {
             loop {
                 let msg = self.read_msg(&mut tcp).await;
+
                 if msg.is_err() {
                     println!("❌读取消息失败,关闭当前client 连接{:?}", msg);
                     return;
                 }
 
                 let msg = msg.unwrap();
+
                 println!("读取消息: {}", msg.message_type);
                 match msg.message_type {
                     RTCPType::Initialize(port) => {
