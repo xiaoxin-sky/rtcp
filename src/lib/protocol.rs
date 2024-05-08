@@ -19,7 +19,7 @@ pub type TransformationDataLen = usize;
 #[derive(Debug)]
 pub enum RTCPType {
     /// 初始化
-    Initialize(usize),
+    Initialize(u16),
     /// 创建新链接，携带唯一id
     NewConnection,
     /// 互传数据，携带唯一id
@@ -33,7 +33,7 @@ impl RTCPType {
     pub fn new_from_str(s: &str) -> io::Result<RTCPType> {
         if s.starts_with("initialize") {
             let size_str = &s["initialize:".len()..];
-            if let Ok(size) = size_str.parse::<usize>() {
+            if let Ok(size) = size_str.parse::<u16>() {
                 return Ok(RTCPType::Initialize(size));
             }
         }

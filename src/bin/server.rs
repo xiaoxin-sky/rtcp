@@ -14,6 +14,8 @@ use tokio::{
     task::JoinHandle,
 };
 
+
+
 pub struct RTcpServer {
     pub tcp_pool: Arc<unmanaged::Pool<TcpStreamData>>,
 }
@@ -134,7 +136,7 @@ impl RTcpServer {
     /// 用于接收用户请求，并把请求转发给代理服务器
     async fn create_user_server(
         &self,
-        port: usize,
+        port: u16,
         sender: Sender<()>,
     ) -> tokio::task::JoinHandle<()> {
         let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await.unwrap();

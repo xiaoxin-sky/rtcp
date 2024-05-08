@@ -1,6 +1,7 @@
 use std::{borrow::BorrowMut, time::Duration};
 
 use bytes::BytesMut;
+use clap::Parser;
 use deadpool::managed::Object;
 use rtcp::{
     protocol::{RTCPMessage, RTCPType},
@@ -11,22 +12,51 @@ use tokio::{
     net::{TcpSocket, TcpStream},
     time::sleep,
 };
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// 被代理服务器 ip
+    #[arg(short, long)]
+    ip: String,
 
+    /// 被代理服务器端口
+    #[arg(short, long)]
+    port: u16,
+
+    /// 访问端口
+    #[arg(short, long)]
+    access_port: u16,
+
+    /// rtcp 服务器ip
+    #[arg(short, long)]
+    server: String,
+}
 pub struct Client {
     back_end_pool: Pool,
+    /// rtcp 服务器ip
+    server_ip: String,
 }
 
+// impl Default for Client {
+//     fn default() -> Self {
+//         Self::new()
+//     }
+// }
+
 impl Client {
-    pub fn new() -> Self {
-        let mgr = TcpPoolManager::new("nestjs".to_string(), "127.0.0.1".to_string(), 8083);
+    pub fn new(backend_ip: String, backend_port: u16, server_ip: String) -> Self {
+        let mgr = TcpPoolManager::new("nestjs".to_string(), backend_ip, backend_port);
         let back_end_pool = Pool::builder(mgr).build().unwrap();
-        Client { back_end_pool }
+        Client {
+            back_end_pool,
+            server_ip,
+        }
     }
 
     /// 启动代理
-    pub async fn start(&self) {
+    pub async fn start(&self, access_port: u16) {
         loop {
-            let addr = "127.0.0.1:5541".parse().unwrap();
+            let addr = format!("{}:5541", self.server_ip).parse().unwrap();
             let tcp = TcpSocket::new_v4().unwrap();
 
             let connect_res = tcp.connect(addr).await;
@@ -38,13 +68,13 @@ impl Client {
 
             let mut client_stream = connect_res.unwrap();
 
-            self.send_init_msg(&mut client_stream).await;
+            self.send_init_msg(&mut client_stream, access_port).await;
             self.server_msg_handel(client_stream).await;
         }
     }
 
-    async fn send_init_msg(&self, client_stream: &mut TcpStream) {
-        let init_msg = RTCPMessage::new(RTCPType::Initialize(3361));
+    async fn send_init_msg(&self, client_stream: &mut TcpStream, access_port: u16) {
+        let init_msg = RTCPMessage::new(RTCPType::Initialize(access_port));
 
         client_stream
             .write_all(&init_msg.serialize())
@@ -91,9 +121,9 @@ impl Client {
     /// 创建后端连接池
     async fn create_proxy_connection(&self) {
         let back_end_pool = self.back_end_pool.clone();
+        let addr = format!("{}:5533", self.server_ip).parse().unwrap();
 
         tokio::spawn(async move {
-            let addr = "127.0.0.1:5533".parse().unwrap();
             let tcp = TcpSocket::new_v4().unwrap();
             let mut client_stream = tcp.connect(addr).await.unwrap();
 
@@ -125,6 +155,7 @@ impl Client {
 
 #[tokio::main]
 async fn main() {
-    let client = Client::new();
-    client.start().await;
+    let args = Args::parse();
+    let client = Client::new(args.ip, args.port, args.server);
+    client.start(args.access_port).await;
 }
