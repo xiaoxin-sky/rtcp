@@ -11,10 +11,10 @@ async fn main() {
             let mut buf = BytesMut::with_capacity(4 * 1024);
             loop {
                 let len = stream.read_buf(&mut buf).await.unwrap();
-                let data = format!("读取长度:{}", len);
-                println!("{data}");
-                let data = format!("HTTP/1.1 200 OK\r\nContent-Length:{}\r\nContent-Type:text/plain; Charset=utf-8\r\n\r\n{}", data.len(), data);
-                stream.write_all(data.as_bytes()).await.unwrap();
+                let data = buf.clone();
+                let head = format!("HTTP/1.1 200 OK\r\nContent-Length:{}\r\nContent-Type:text/plain; Charset=utf-8\r\n\r\n", data.len());
+                stream.write_all(head.as_bytes()).await.unwrap();
+                stream.write_all(&data).await.unwrap();
                 let _ =stream.flush().await;
 
             }

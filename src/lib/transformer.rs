@@ -21,6 +21,11 @@ struct RequestHead {
 }
 
 impl RequestHead {
+    /// 修改请求头
+    pub fn change_head(&mut self, k: String, v: String) {
+        self.headers.insert(k, v);
+    }
+
     /// 构造请求头
     pub fn build_request_head(&self) -> BytesMut {
         let request_line_byte = self.request_line.to_byte();
@@ -43,15 +48,16 @@ impl RequestHead {
     }
 }
 
-impl HttpTransformer {
-    pub fn new() -> Self {
+impl Default for HttpTransformer {
+    fn default() -> Self {
         Self {
             request_head: None,
-
             _marker: PhantomPinned,
         }
     }
+}
 
+impl HttpTransformer {
     /// 解析请求头
     fn parse_header(&mut self, buf: &mut BytesMut) -> Result<usize, ()> {
         match parser_request_head_all(buf) {
@@ -111,13 +117,21 @@ impl HttpTransformer {
             };
         }
 
-        let header_bytes = self.request_head.as_ref()?.build_request_head();
+        let request_head = self.request_head.as_mut()?;
+        let header_bytes = Self::transformer(request_head);
 
         let mut res = BytesMut::new();
         res.extend_from_slice(&header_bytes);
         res.extend_from_slice(&buf);
 
         Some((res, is_end))
+    }
+
+    /// 修改请求头
+    fn transformer(request_head: &mut RequestHead) -> BytesMut {
+        request_head.change_head("Host".to_string(), "63.0.0.1".to_string());
+        request_head.change_head("User-Agent".to_string(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36".to_string());
+        request_head.build_request_head()
     }
 
     /// 拷贝数据

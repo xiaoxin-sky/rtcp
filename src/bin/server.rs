@@ -161,15 +161,15 @@ impl RTcpServer {
                         let mut is_client_disconnect = false;
                         let (mut r, mut w) = client_tcp.stream.split();
                         let (mut r1, mut w1) = user_tcp.split();
-                        let mut http_transformer = HttpTransformer::new();
+                        let mut http_transformer = HttpTransformer::default();
                         loop {
                             let res = tokio::select! {
-                                res = http_transformer.copy(&mut r, &mut w1) => {
+                                res = io::copy(&mut r, &mut w1) => {
                                     println!("🌈代理池中tcp断开");
                                     is_client_disconnect = true;
                                     res
                                 },
-                                res =io::copy(&mut r1, &mut w)  => {
+                                res = http_transformer.copy(&mut r1, &mut w) => {
                                     println!("🌈用户tcp断开");
                                     res
                                 },
