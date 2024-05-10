@@ -1,7 +1,9 @@
-use deadpool::managed::{self};
-use tokio::
-    net::{TcpSocket, TcpStream}
-;
+use bytes::BytesMut;
+use deadpool::managed::{self, RecycleError};
+use tokio::{
+    io::AsyncWriteExt,
+    net::{TcpSocket, TcpStream},
+};
 
 pub struct TcpPoolManager {
     name: String,
@@ -25,6 +27,8 @@ pub struct TcpStreamData {
     pub stream: TcpStream,
     pub id: uuid::Uuid,
     pub disconnect: bool,
+    /// 最后一次使用结束的时间
+    pub latest_time: Option<std::time::Instant>,
 }
 
 impl TcpStreamData {
@@ -33,6 +37,7 @@ impl TcpStreamData {
             stream,
             id: uuid::Uuid::new_v4(),
             disconnect: false,
+            latest_time: None,
         }
     }
 }
@@ -46,7 +51,7 @@ impl managed::Manager for TcpPoolManager {
         let tcp_socket = TcpSocket::new_v4().unwrap();
         let addr = format!("{}:{}", self.host, self.port).parse().unwrap();
         let stream = tcp_socket.connect(addr).await.unwrap();
-        println!(" 🚀 创建 steam 成功");
+        // println!(" 🚀 创建 steam 成功");
         Ok(TcpStreamData::new(stream))
     }
 
@@ -55,19 +60,41 @@ impl managed::Manager for TcpPoolManager {
         obj: &mut Self::Type,
         metrics: &managed::Metrics,
     ) -> managed::RecycleResult<Self::Error> {
-        // println!(" 🚀 回收 steam 成功");
-        // let mut buf = BytesMut::with_capacity(1);
-        // match obj.stream.peek(&mut buf).await {
-        //     Ok(size) => if size == 0 {
-        //         // 后端断开了，需要从池中销毁掉这个无效的 obj
-        //         Object::take(obj);
-        //         return  Ok(());
-        //         // return Err(deadpool::managed::RecycleError::Backend(Error::Fail));
-        //     },
-        //     Err(e) => {}
-        // };
+        if obj.disconnect {
+            println!("❎ 断联 steam 不再回收");
+            return Err(RecycleError::message("steam 已断开，不再回收"));
+        }
+
+        if let Some(latest_time) = obj.latest_time {
+            if latest_time.elapsed().as_millis() > 10*1000 {
+                println!("❎ steam 超过10秒未使用，不再回收");
+                return Err(RecycleError::message("steam 超过10秒未使用，不再回收"));
+            }
+        }
+        println!("✅ steam 正常回收");
 
         Ok(())
+        // let mut buf = BytesMut::with_capacity(1);
+        // match obj.stream.write(b"").await {
+        //     Ok(size) => {
+        //         println!(" 👋🏻 进入回收 {:?} ", size);
+        //         if size == 0 {
+        //             // 后端断开了，需要从池中销毁掉这个无效的 obj
+        //             return Err(deadpool::managed::RecycleError::message(
+        //                 "steam 已断开，不再回收",
+        //             ));
+        //         }else{
+        //             return Ok(());
+        //         }
+        //     }
+        //     Err(e) => {
+        //         println!(" 👋🏻❌ 进入回收错误 {:?} ", obj);
+
+        //         return Err(deadpool::managed::RecycleError::message(
+        //             "steam 已断开，不再回收",
+        //         ));
+        //     }
+        // };
     }
 }
 

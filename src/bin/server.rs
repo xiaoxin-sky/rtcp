@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{self, SystemTime, UNIX_EPOCH},
+};
 
 use bytes::BytesMut;
 use deadpool::unmanaged::{self, Object};
@@ -13,8 +16,6 @@ use tokio::{
     sync::mpsc::{self, Sender},
     task::JoinHandle,
 };
-
-
 
 pub struct RTcpServer {
     pub tcp_pool: Arc<unmanaged::Pool<TcpStreamData>>,
@@ -38,6 +39,7 @@ impl RTcpServer {
 
             match tcp_listener.accept().await {
                 Ok(stream) => {
+                    println!("收到rtcp client新连接");
                     tokio::spawn(async move {
                         this.client_handle(stream.0).await;
                     });
@@ -57,7 +59,7 @@ impl RTcpServer {
         let mut user_server_handle: Option<JoinHandle<()>> = None;
 
         // client 连接池不够用时候，发送创建新连接的消息
-        let (tx, mut rx) = mpsc::channel::<()>(100);
+        let (tx, mut rx) = mpsc::channel::<()>(1000);
 
         new_poll_connect_handle = Some(tokio::spawn(async move {
             loop {
@@ -65,12 +67,11 @@ impl RTcpServer {
                     // write_half.as_ref().
                     let msg = RTCPMessage::new(RTCPType::NewConnection);
                     let res = write_half.write_all(&msg.serialize()).await;
-                    println!("🚀写入创建新消息结果{:?}", res);
                     if res.is_err() {
                         break;
                     }
                     let res = write_half.flush().await;
-                    println!("🚀发送创建新链接消息成功,{:?}", res);
+                    println!("🚀 发送创建新代理tcp成功,{:?}", res);
                 }
             }
         }));
@@ -149,43 +150,65 @@ impl RTcpServer {
                     let tcp_pool = tcp_pool.clone();
 
                     let pool_status = tcp_pool.status();
-                    println!("🚀收到请求:{_user_addr}  {pool_status:?}");
+                    // println!(
+                    //     "--------------------------------\r\n👤{:?} 收到请求:{_user_addr}  {pool_status:?}\r\n",
+                    //     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+                    // );
 
+                    println!("rtcp_client 有效数 {:?}", pool_status);
                     if pool_status.available == 0 {
                         if let Err(_) = sender.send(()).await {
                             println!("❌发送创建新连接消息失败，线程通道关闭");
                             break;
                         };
+                    } else {
+                        println!("跳过发送");
                     }
 
                     tokio::spawn(async move {
-                        let mut client_tcp = tcp_pool.get().await.unwrap();
-                        let mut is_client_disconnect = false;
-                        let (mut r, mut w) = client_tcp.stream.split();
-                        let (mut r1, mut w1) = user_tcp.split();
-                        let mut http_transformer = HttpTransformer::default();
                         loop {
-                            let res = tokio::select! {
-                                res = io::copy(&mut r, &mut w1) => {
-                                    println!("🌈代理池中tcp断开");
-                                    is_client_disconnect = true;
-                                    res
-                                },
-                                res = http_transformer.copy(&mut r1, &mut w) => {
-                                    println!("🌈用户tcp断开");
-                                    res
-                                },
-                            }
-                            .unwrap();
-                            println!("{_user_addr} 传输结束{:?}", res);
-                            if res == 0 {
-                                break;
-                            }
-                        }
+                            let mut client_tcp = tcp_pool.get().await.unwrap();
 
-                        // 如果是代理客户端主动断开，则销毁当前连接
-                        if is_client_disconnect {
-                            let _ = Object::take(client_tcp);
+                            // 过滤掉失效的 tcp 连接
+                            if let Some(latest_time) = client_tcp.latest_time {
+                                if latest_time.elapsed().as_millis() > 8 * 1000 {
+                                    let _ = Object::take(client_tcp);
+                                    continue;
+                                }
+                            }
+
+                            let id = client_tcp.id.to_string();
+                            let (mut client_reader, mut client_writer) = client_tcp.stream.split();
+                            let (mut user_reader, mut user_writer) = user_tcp.split();
+
+                            let mut http_transformer = HttpTransformer::default();
+
+                            let is_client_disconnect = loop {
+                                let (res, is_client_disconnect) = tokio::select! {
+                                    res = io::copy(&mut user_reader, &mut client_writer) => {
+                                        println!("🔐 用户发送到代理池 {res:?} {:?}",id);
+                                        (res.unwrap_or_default(),false)
+                                    },
+                                    res = http_transformer.copy(&mut client_reader, &mut user_writer) => {
+                                        // println!("🌈 代理池服务器响应到用户 {res:?} {:?}",id);
+                                        (res.unwrap_or_default(),true)
+                                    },
+                                };
+
+                                if res == 0 {
+                                    break is_client_disconnect;
+                                }
+                            };
+
+                            user_tcp.shutdown().await;
+
+                            if is_client_disconnect {
+                                let mut client_tcp = Object::take(client_tcp);
+                                client_tcp.stream.shutdown().await;
+                            } else {
+                                client_tcp.latest_time = Some(std::time::Instant::now());
+                            }
+                            break;
                         }
                     });
                 };
