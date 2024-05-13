@@ -40,7 +40,7 @@ cargo build --release
 # run server
 ./target/release/server
 # run client
-./target/release/client 
+./target/release/client --ip 127.0.0.1 --port 3000 --access-port 7002 --server 127.0.0.1
 # run test backend server
 ./target/release/be
 ```
