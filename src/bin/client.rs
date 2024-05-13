@@ -1,8 +1,7 @@
-use std::{borrow::BorrowMut, time::Duration};
+use std::time::Duration;
 
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BytesMut};
 use clap::Parser;
-use deadpool::managed::Object;
 use rtcp::{
     protocol::{RTCPMessage, RTCPType},
     tcp_pool::{Pool, TcpPoolManager},
@@ -35,15 +34,22 @@ pub struct Client {
     back_end_pool: Pool,
     /// rtcp 服务器ip
     server_ip: String,
+
+    proxy_pool: Pool,
 }
 
 impl Client {
     pub fn new(backend_ip: String, backend_port: u16, server_ip: String) -> Self {
         let mgr = TcpPoolManager::new("nestjs".to_string(), backend_ip, backend_port);
         let back_end_pool = Pool::builder(mgr).build().unwrap();
+
+        let mgr_proxy = TcpPoolManager::new("mgr_proxy".to_string(), server_ip.clone(), 5533);
+        let proxy_pool = Pool::builder(mgr_proxy).build().unwrap();
+
         Client {
             back_end_pool,
             server_ip,
+            proxy_pool,
         }
     }
 
@@ -78,41 +84,14 @@ impl Client {
     }
 
     async fn server_msg_handel(&self, mut client_stream: TcpStream) {
-        // while let Ok(msg) = self.parse_msg(&mut client_stream).await {
-        //     match msg.message_type {
-        //         RTCPType::Initialize(_) => println!("🔥客户端不需要实现"),
-        //         RTCPType::NewConnection => {
-        //             println!("🚀创建 back_end 新链接");
-        //             self.create_proxy_connection().await;
-        //         }
-        //         RTCPType::CloseConnection => println!("🔥客户端不需要实现"),
-        //     }
-        // }
-        match self.parse_msg(&mut client_stream).await {
-            Ok(msg) => match msg.message_type {
-                RTCPType::Initialize(_) => println!("🔥客户端不需要实现"),
-                RTCPType::NewConnection => {
-                    println!("🚀创建 back_end 新链接");
-                    // self.create_proxy_connection();
-                }
-                RTCPType::CloseConnection => println!("🔥客户端不需要实现"),
-            },
-            Err(e) => {
-                println!("解析消息出错,{:?}", e);
-            }
-        }
-    }
-
-    /// parse rtcp protocol
-    async fn parse_msg(&self, tcp: &mut TcpStream) -> io::Result<RTCPMessage> {
         let mut buf = BytesMut::with_capacity(40 * 1024);
 
         loop {
-            tcp.read_buf(&mut buf).await?;
-            println!("读取长度 : {:?}", buf.len());
+            client_stream.read_buf(&mut buf).await.unwrap();
 
             if buf.is_empty() {
-                return Err(io::Error::new(io::ErrorKind::Other, "server closed"));
+                println!("❌读取为空，5541 服务器断开连接");
+                break;
             }
 
             // 一次读取的数据中可能包含多个 msg，需要全部解析出来
@@ -125,14 +104,13 @@ impl Client {
 
                 let (rtcp_message, size) = res.unwrap();
 
-                println!("消息大小: {:?}", size);
-
                 buf.advance(size);
 
                 match rtcp_message.message_type {
                     RTCPType::Initialize(_) => println!("🔥客户端不需要实现"),
                     RTCPType::NewConnection => {
                         self.create_proxy_connection();
+                        println!("✅创建连接成功");
                     }
                     RTCPType::CloseConnection => println!("🔥客户端不需要实现"),
                 }
@@ -140,33 +118,18 @@ impl Client {
         }
     }
 
-    /// 创建 rtcp 服务器代理连接
-    // async fn create_rtcp_proxy_connection(&self) -> TcpStream {
-    //     let addr = format!("{}:5533", self.server_ip).parse().unwrap();
-    //     let tcp = TcpSocket::new_v4().unwrap();
-    //     tcp.connect(addr).await.unwrap()
-    // }
     /// 创建后端连接池
     fn create_proxy_connection(&self) {
-        // rtcp 服务器 tcp stream
-        // let mut client_stream = self.create_rtcp_proxy_connection().await;
-        let addr = format!("{}:5533", self.server_ip).parse().unwrap();
-
         // 真实后端连接池
         let back_end_pool = self.back_end_pool.clone();
+        let proxy_pool = self.proxy_pool.clone();
 
         tokio::spawn(async move {
-            let tcp = TcpSocket::new_v4().unwrap();
-            let mut client_stream = tcp.connect(addr).await.unwrap();
             let mut b_tcp = back_end_pool.get().await.unwrap();
-            // println!(
-            //     "后端 tcp id: {:?} 池信息{:?}",
-            //     b_tcp.id,
-            //     back_end_pool.status()
-            // );
+            let mut proxy_stream = proxy_pool.get().await.unwrap();
 
             let (mut back_end_reader, mut back_end_writer) = b_tcp.stream.split();
-            let (mut client_reader, mut client_writer) = client_stream.split();
+            let (mut client_reader, mut client_writer) = proxy_stream.stream.split();
 
             let is_back_end_close = loop {
                 let (size, is_back_end_close) = tokio::select! {
@@ -189,8 +152,10 @@ impl Client {
                 }
             };
 
+            proxy_stream.disconnect = true;
             if is_back_end_close {
                 b_tcp.disconnect = true;
+                // proxy_stream.latest_time = Some(std::time::Instant::now());
             } else {
                 b_tcp.latest_time = Some(std::time::Instant::now());
             }

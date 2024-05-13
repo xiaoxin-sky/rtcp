@@ -64,14 +64,9 @@ impl RTcpServer {
         new_poll_connect_handle = Some(tokio::spawn(async move {
             loop {
                 if rx.recv().await.is_some() {
-                    // write_half.as_ref().
                     let msg = RTCPMessage::new(RTCPType::NewConnection);
-                    let res = write_half.write_all(&msg.serialize()).await;
-                    if res.is_err() {
-                        break;
-                    }
-                    let res = write_half.flush().await;
-                    println!("🚀 发送创建新代理tcp成功,{:?}", res);
+                    write_half.write_all(&msg.serialize()).await.unwrap();
+                    write_half.flush().await.unwrap();
                 }
             }
         }));
@@ -147,69 +142,48 @@ impl RTcpServer {
         tokio::spawn(async move {
             loop {
                 if let Ok((mut user_tcp, _user_addr)) = listener.accept().await {
-                    let tcp_pool = tcp_pool.clone();
-
-                    let pool_status = tcp_pool.status();
-                    // println!(
-                    //     "--------------------------------\r\n👤{:?} 收到请求:{_user_addr}  {pool_status:?}\r\n",
-                    //     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
-                    // );
-
-                    println!("rtcp_client 有效数 {:?}", pool_status);
-                    if pool_status.available == 0 {
-                        if let Err(_) = sender.send(()).await {
-                            println!("❌发送创建新连接消息失败，线程通道关闭");
-                            break;
-                        };
-                    } else {
-                        println!("跳过发送");
+                    if tcp_pool.status().available == 0 {
+                        sender.send(()).await.unwrap();
                     }
+                    
+                    let mut client_tcp = tcp_pool.get().await.unwrap();
 
                     tokio::spawn(async move {
-                        loop {
-                            let mut client_tcp = tcp_pool.get().await.unwrap();
+                        println!("传输");
+                        let (mut client_reader, mut client_writer) = client_tcp.stream.split();
+                        let (mut user_reader, mut user_writer) = user_tcp.split();
 
-                            // 过滤掉失效的 tcp 连接
-                            if let Some(latest_time) = client_tcp.latest_time {
-                                if latest_time.elapsed().as_millis() > 8 * 1000 {
-                                    let _ = Object::take(client_tcp);
-                                    continue;
-                                }
-                            }
+                        let mut http_transformer = HttpTransformer::default();
 
-                            let id = client_tcp.id.to_string();
-                            let (mut client_reader, mut client_writer) = client_tcp.stream.split();
-                            let (mut user_reader, mut user_writer) = user_tcp.split();
-
-                            let mut http_transformer = HttpTransformer::default();
-
-                            let is_client_disconnect = loop {
-                                let (res, is_client_disconnect) = tokio::select! {
-                                    res = io::copy(&mut user_reader, &mut client_writer) => {
-                                        println!("🔐 用户发送到代理池 {res:?} {:?}",id);
-                                        (res.unwrap_or_default(),false)
-                                    },
-                                    res = http_transformer.copy(&mut client_reader, &mut user_writer) => {
-                                        // println!("🌈 代理池服务器响应到用户 {res:?} {:?}",id);
-                                        (res.unwrap_or_default(),true)
-                                    },
-                                };
-
-                                if res == 0 {
-                                    break is_client_disconnect;
-                                }
+                        let is_client_disconnect = loop {
+                            let (res, is_client_disconnect) = tokio::select! {
+                                res = io::copy(&mut user_reader, &mut client_writer) => {
+                                    // println!("🔐 用户发送到代理池 {res:?}");
+                                    (res.unwrap_or_default(),false)
+                                },
+                                res = http_transformer.copy(&mut client_reader, &mut user_writer) => {
+                                    // println!("🌈 代理池服务器响应到用户 {res:?} {:?}",id);
+                                    (res.unwrap_or_default(),true)
+                                },
                             };
 
-                            user_tcp.shutdown().await;
-
-                            if is_client_disconnect {
-                                let mut client_tcp = Object::take(client_tcp);
-                                client_tcp.stream.shutdown().await;
-                            } else {
-                                client_tcp.latest_time = Some(std::time::Instant::now());
+                            if res == 0 {
+                                // println!(
+                                //     "传输断开  是否为代理客户端断开{:?}",
+                                //     is_client_disconnect
+                                // );
+                                break is_client_disconnect;
                             }
-                            break;
-                        }
+                        };
+
+                        let mut client_tcp = Object::take(client_tcp);
+                        client_tcp.stream.shutdown().await;
+                        // if is_client_disconnect {
+                        //     let mut client_tcp = Object::take(client_tcp);
+                        //     client_tcp.stream.shutdown().await;
+                        // } else {
+                        // client_tcp.latest_time = Some(std::time::Instant::now());
+                        // }
                     });
                 };
             }
@@ -219,7 +193,7 @@ impl RTcpServer {
     /// 创建代理服务器
     /// 用于接收 client 端的 tcp 连接，并把该连接加入到连接池中
     async fn create_proxy_server(&self) -> tokio::task::JoinHandle<()> {
-        let tcp_pool: Arc<unmanaged::Pool<TcpStreamData>> = self.tcp_pool.clone();
+        let tcp_pool = self.tcp_pool.clone();
         tokio::spawn(async move {
             let listener = TcpListener::bind("0.0.0.0:5533").await;
             if listener.is_err() {
@@ -235,8 +209,11 @@ impl RTcpServer {
                     break;
                 }
                 let (proxy_client, _) = res.unwrap();
+
                 match tcp_pool.add(TcpStreamData::new(proxy_client)).await {
-                    Ok(_) => println!("✅ 收到1个代理客户端连接成功"),
+                    Ok(_) => {
+                        println!("✅ 收到1个代理客户端连接成功");
+                    }
                     Err(e) => {
                         println!("❌代理连接添加失败{:?}", e.1);
                         break;
