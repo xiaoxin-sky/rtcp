@@ -156,11 +156,11 @@ impl RTcpServer {
                         let is_client_disconnect = loop {
                             let (res, is_client_disconnect) = tokio::select! {
                                 res = http_transformer.copy(&mut user_reader, &mut client_writer) => {
-                                    // println!("🔐 用户发送到代理池 {res:?}");
+                                    println!("🔐 用户发送到代理池 {res:?}");
                                     (res.unwrap_or_default(),false)
                                 },
                                 res = io::copy(&mut client_reader, &mut user_writer) => {
-                                    // println!("🌈 代理池服务器响应到用户 {res:?} {:?}",id);
+                                    println!("🌈 代理池服务器响应到用户 {res:?} ");
                                     (res.unwrap_or_default(),true)
                                 },
                             };

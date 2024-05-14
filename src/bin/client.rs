@@ -134,13 +134,13 @@ impl Client {
             let is_back_end_close = loop {
                 let (size, is_back_end_close) = tokio::select! {
                     res = io::copy(&mut back_end_reader, &mut client_writer) => {
-                        // println!("🚌 后端读取结束并写入到代理客户端 {:?}",res);
+                        println!("🚌 后端读取结束并写入到代理客户端 {:?}",res);
                         let size = res.unwrap_or_default();
 
                         (size,true)
                     },
                     res = io::copy(&mut client_reader, &mut back_end_writer) => {
-                        // println!("🔐 客户端读取并写入到后端 {:?}",res);
+                        println!("🔐 用户客户端读取并写入到后端 {:?}",res);
                         let size = res.unwrap_or_default();
 
                         (size,false)
@@ -153,6 +153,7 @@ impl Client {
             };
 
             proxy_stream.disconnect = true;
+            proxy_stream.stream.shutdown().await;
             if is_back_end_close {
                 b_tcp.disconnect = true;
                 // proxy_stream.latest_time = Some(std::time::Instant::now());
