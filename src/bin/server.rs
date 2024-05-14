@@ -90,7 +90,6 @@ impl RTcpServer {
 
             let msg = msg.unwrap();
 
-            println!("读取消息: {}", msg.message_type);
             match msg.message_type {
                 RTCPType::Initialize(port) => {
                     proxy_server_handle = Some(self.create_proxy_server().await);
@@ -211,7 +210,7 @@ impl RTcpServer {
 
                 match tcp_pool.add(TcpStreamData::new(proxy_client)).await {
                     Ok(_) => {
-                        println!("✅ 收到1个代理客户端连接成功");
+                        // println!("✅ 收到1个代理客户端连接成功");
                     }
                     Err(e) => {
                         println!("❌代理连接添加失败{:?}", e.1);

@@ -61,17 +61,14 @@ impl managed::Manager for TcpPoolManager {
         metrics: &managed::Metrics,
     ) -> managed::RecycleResult<Self::Error> {
         if obj.disconnect {
-            println!("❎ 断联 steam 不再回收");
             return Err(RecycleError::message("steam 已断开，不再回收"));
         }
 
         if let Some(latest_time) = obj.latest_time {
             if latest_time.elapsed().as_millis() > 10*1000 {
-                println!("❎ steam 超过10秒未使用，不再回收");
                 return Err(RecycleError::message("steam 超过10秒未使用，不再回收"));
             }
         }
-        println!("✅ steam 正常回收");
 
         Ok(())
         // let mut buf = BytesMut::with_capacity(1);

@@ -83,7 +83,6 @@ impl HttpTransformer {
             match reader.read_buf(&mut buf).await {
                 Ok(size) => {
                     if size == 0 {
-                        println!("✅用户退出");
                         return buf;
                     }
 
