@@ -16,6 +16,7 @@ pub struct HttpTransformer {
 }
 
 /// 请求首部
+#[derive(Debug)]
 struct RequestHead {
     request_line: RequestLine,
     headers: HashMap<String, String>,
