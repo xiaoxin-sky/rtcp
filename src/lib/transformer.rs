@@ -1,4 +1,4 @@
-use std::{collections::HashMap, marker::PhantomPinned};
+use std::{collections::HashMap, marker::PhantomPinned, net::SocketAddr};
 
 use bytes::{Buf, BufMut, BytesMut};
 use tokio::{
@@ -9,6 +9,7 @@ use tokio::{
 use crate::parser::{parser_request_head_all, RequestLine};
 
 pub struct HttpTransformer {
+    user_addr: SocketAddr,
     /// 请求首部
     request_head: Option<RequestHead>,
     _marker: PhantomPinned,
@@ -48,16 +49,14 @@ impl RequestHead {
     }
 }
 
-impl Default for HttpTransformer {
-    fn default() -> Self {
+impl HttpTransformer {
+    pub fn new(user_addr: SocketAddr) -> Self {
         Self {
+            user_addr,
             request_head: None,
             _marker: PhantomPinned,
         }
     }
-}
-
-impl HttpTransformer {
     /// 解析请求头
     fn parse_header(&mut self, buf: &mut BytesMut) -> Result<usize, ()> {
         match parser_request_head_all(buf) {
@@ -116,7 +115,7 @@ impl HttpTransformer {
         }
 
         let request_head = self.request_head.as_mut().unwrap();
-        let header_bytes = Self::transformer(request_head);
+        let header_bytes = Self::transformer(request_head, self.user_addr);
 
         let mut res = BytesMut::new();
         res.extend_from_slice(&header_bytes);
@@ -127,9 +126,10 @@ impl HttpTransformer {
     }
 
     /// 修改请求头
-    fn transformer(request_head: &mut RequestHead) -> BytesMut {
+    fn transformer(request_head: &mut RequestHead, user_addr: SocketAddr) -> BytesMut {
         request_head.change_head("Host".to_string(), "8.0.0.1".to_string());
-        request_head.change_head("User-Agent".to_string(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36".to_string());
+        request_head.change_head("X-Forwarded-For".to_string(), user_addr.ip().to_string());
+        // request_head.change_head("User-Agent".to_string(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36".to_string());
         request_head.build_request_head()
     }
 

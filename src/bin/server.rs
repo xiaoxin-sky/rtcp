@@ -141,7 +141,7 @@ impl RTcpServer {
 
         tokio::spawn(async move {
             loop {
-                if let Ok((mut user_tcp, _user_addr)) = listener.accept().await {
+                if let Ok((mut user_tcp, user_addr)) = listener.accept().await {
                     if tcp_pool.status().available == 0 {
                         sender.send(()).await.unwrap();
                     }
@@ -149,11 +149,10 @@ impl RTcpServer {
                     let mut client_tcp = tcp_pool.get().await.unwrap();
 
                     tokio::spawn(async move {
-                        println!("传输");
                         let (mut client_reader, mut client_writer) = client_tcp.stream.split();
                         let (mut user_reader, mut user_writer) = user_tcp.split();
 
-                        let mut http_transformer = HttpTransformer::default();
+                        let mut http_transformer = HttpTransformer::new(user_addr);
 
                         let is_client_disconnect = loop {
                             let (res, is_client_disconnect) = tokio::select! {
