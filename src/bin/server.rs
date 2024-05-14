@@ -176,6 +176,7 @@ impl RTcpServer {
 
                         let mut client_tcp = Object::take(client_tcp);
                         client_tcp.stream.shutdown().await;
+                        user_tcp.shutdown().await;
                         // if is_client_disconnect {
                         //     let mut client_tcp = Object::take(client_tcp);
                         //     client_tcp.stream.shutdown().await;
