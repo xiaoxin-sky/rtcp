@@ -26,6 +26,8 @@ pub enum RTCPType {
     // Transformation(TransformationDataLen),
     /// 关闭
     CloseConnection,
+    /// 心跳
+    Heartbeat,
 }
 
 impl RTCPType {
@@ -40,6 +42,7 @@ impl RTCPType {
         match s {
             "new_connection" => Ok(RTCPType::NewConnection),
             "close_connection" => Ok(RTCPType::CloseConnection),
+            "heartbeat" => Ok(RTCPType::Heartbeat),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid rtcp message type",
@@ -54,6 +57,7 @@ impl Display for RTCPType {
             RTCPType::Initialize(port) => write!(f, "initialize:{port}"),
             RTCPType::NewConnection => write!(f, "new_connection"),
             RTCPType::CloseConnection => write!(f, "close_connection"),
+            RTCPType::Heartbeat => write!(f, "heartbeat"),
         }
     }
 }

@@ -99,6 +99,9 @@ impl RTcpServer {
                     println!("🔥不需要实现")
                 }
                 RTCPType::CloseConnection => println!("🔥不需要实现"),
+                RTCPType::Heartbeat => {
+                    println!("收到心跳");
+                }
             }
         }
     }
@@ -144,7 +147,7 @@ impl RTcpServer {
                     if tcp_pool.status().available == 0 {
                         sender.send(()).await.unwrap();
                     }
-                    
+
                     let mut client_tcp = tcp_pool.get().await.unwrap();
 
                     tokio::spawn(async move {

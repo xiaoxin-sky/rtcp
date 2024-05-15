@@ -8,7 +8,7 @@ use rtcp::{
 };
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
-    net::{TcpSocket, TcpStream},
+    net::{tcp::OwnedReadHalf, TcpSocket, TcpStream},
     time::sleep,
 };
 #[derive(Parser, Debug)]
@@ -69,7 +69,18 @@ impl Client {
             let mut client_stream = connect_res.unwrap();
 
             self.send_init_msg(&mut client_stream, access_port).await;
-            self.server_msg_handel(client_stream).await;
+
+            let (reader_stream, mut writer_stream) = client_stream.into_split();
+            tokio::spawn(async move {
+                loop {
+                    sleep(Duration::from_secs(10)).await;
+                    let msg = RTCPMessage::new(RTCPType::Heartbeat);
+                    writer_stream.write_all(msg.serialize().as_ref()).await;
+                    writer_stream.flush().await;
+                }
+            });
+
+            self.server_msg_handel(reader_stream).await;
         }
     }
 
@@ -83,7 +94,7 @@ impl Client {
         client_stream.flush().await.unwrap();
     }
 
-    async fn server_msg_handel(&self, mut client_stream: TcpStream) {
+    async fn server_msg_handel(&self, mut client_stream: OwnedReadHalf) {
         let mut buf = BytesMut::with_capacity(40 * 1024);
 
         loop {
@@ -113,6 +124,7 @@ impl Client {
                         println!("✅创建连接成功");
                     }
                     RTCPType::CloseConnection => println!("🔥客户端不需要实现"),
+                    RTCPType::Heartbeat => {}
                 }
             }
         }
